@@ -1,0 +1,3 @@
+[submodule "vendor/kimodo.cpp"]
+	path = vendor/kimodo.cpp
+	url = https://github.com/localai-org/kimodo.cpp.git

@@ -1,0 +1,25 @@
+# Build output
+build/
+*.dll
+*.lib
+*.exe
+!vendor/kimodo.cpp/**
+
+# Model weights (GBs; fetched by scripts/download_gguf_weights.py, not committed)
+vendor/kimodo.cpp/models/
+vendor/kimodo.cpp/generated/
+
+# Generated motion (raw streams + glb) — reproducible from a prompt, not source
+output_motion/
+out/**/*.glb
+out/**/*.f32
+prompt.txt
+kimodo_ik_run.log
+
+# Python
+__pycache__/
+*.pyc
+
+# --- KimodoTestbed — 로컬 실험용 UE5.8 프로젝트. 통째로 git 밖에 둔다 ---
+# 결과물은 git이 아니라 UE5 Export/Migrate로 별도 반출한다 (사용자 결정 2026-09-15).
+KimodoTestbed/
