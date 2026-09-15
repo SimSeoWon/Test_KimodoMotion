@@ -136,18 +136,29 @@ def _load_mixamo_bind():
     return json.loads(_MIXAMO_BIND_PATH.read_text(encoding="utf-8"))
 
 
+# create_bone_mesh()의 반환 시그니처(vertices, joints, weights, indices)엔 색을 넣을 자리가
+# 없어서(vendor 고정) 여기 사이드채널로 남겨두고, main()에서 후처리 단계(COLOR_0 주입)로
+# 읽어간다. Y Bot은 갑옷 판(청록)과 관절 구(어두운 메탈릭 회색)의 재질이 서로 달라서
+# 하나로 뭉개면 부정확하다 — 정점마다 원본 메시의 색을 그대로 들고 간다.
+_last_vertex_colors = None
+
+
 def create_preview_mesh(global_pos, parents):
     """export_glb.create_bone_mesh() 대체. Mixamo 바인딩 데이터가 있으면 그 메시를 쓰고
     (soma30 레스트 좌표계로 이미 재배치돼 있음 — assets/extract_mixamo_soma30.py 참고),
     거기 없는 조인트(목/턱/눈)만 캡슐로 채운다. 바인딩 데이터가 없으면 전부 캡슐로 그린다."""
+    global _last_vertex_colors
     bind = _load_mixamo_bind()
     if bind is None:
-        return create_capsule_doll_mesh(global_pos, parents)
+        v, j, w, i = create_capsule_doll_mesh(global_pos, parents)
+        _last_vertex_colors = [[0.75, 0.66, 0.58, 1.0]] * len(v)
+        return v, j, w, i
 
     vertices = [list(p) for p in bind["vertices"]]
     joints = [[j, 0, 0, 0] for j in bind["joint_index"]]
     weights = [[1.0, 0.0, 0.0, 0.0] for _ in bind["joint_index"]]
     indices = list(bind["indices"])
+    colors = [list(c) for c in bind.get("colors", [])] or [[0.75, 0.66, 0.58, 1.0]] * len(vertices)
 
     cap_v, cap_j, cap_w, cap_i = create_capsule_doll_mesh(
         global_pos, parents, joints_filter=sorted(_CAPSULE_ONLY_JOINTS))
@@ -156,22 +167,19 @@ def create_preview_mesh(global_pos, parents):
     joints.extend(cap_j)
     weights.extend(cap_w)
     indices.extend(i + base for i in cap_i)
+    colors.extend([bind.get("base_color", [0.75, 0.66, 0.58, 1.0])] * len(cap_v))
 
+    _last_vertex_colors = colors
     return vertices, joints, weights, indices
 
 
 export_glb.create_bone_mesh = create_preview_mesh
 
 
-def _make_double_sided_skin_material(glb_path: Path):
-    """이미 쓰여진 glb를 다시 열어 doubleSided 재질을 하나 추가한다 — 캡슐 옆면
-    삼각형 감김 방향이 어느 한쪽에서 틀려도 안 보이는 면이 생기지 않도록 하는 안전장치.
-    JSON 청크만 다시 쓰고 BIN 청크(애니메이션/스킨 데이터)는 바이트 그대로 재사용한다."""
-    data = glb_path.read_bytes()
-    magic, version, _total_len = struct.unpack_from("<4sII", data, 0)
+def _read_glb_chunks(data: bytes):
+    magic, _version, _total_len = struct.unpack_from("<4sII", data, 0)
     if magic != b"glTF":
-        raise ValueError(f"{glb_path}는 유효한 glb가 아닙니다")
-
+        raise ValueError("유효한 glb가 아닙니다")
     offset = 12
     json_len, _json_type = struct.unpack_from("<I4s", data, offset)
     offset += 8
@@ -180,23 +188,15 @@ def _make_double_sided_skin_material(glb_path: Path):
     bin_len, _bin_type = struct.unpack_from("<I4s", data, offset)
     offset += 8
     bin_bytes = data[offset:offset + bin_len]
+    return json.loads(json_bytes.decode("utf-8")), bytearray(bin_bytes)
 
-    gltf = json.loads(json_bytes.decode("utf-8"))
-    gltf["materials"] = [{
-        "name": "KimodoPreviewDoll",
-        "doubleSided": True,
-        "pbrMetallicRoughness": {
-            "baseColorFactor": [0.75, 0.66, 0.58, 1.0],
-            "metallicFactor": 0.0,
-            "roughnessFactor": 0.9,
-        },
-    }]
-    for primitive in gltf["meshes"][0]["primitives"]:
-        primitive["material"] = 0
 
+def _write_glb_chunks(glb_path: Path, gltf: dict, bin_bytes: bytearray):
     new_json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
     while len(new_json_bytes) % 4 != 0:
         new_json_bytes += b" "
+    while len(bin_bytes) % 4 != 0:
+        bin_bytes += b"\x00"
 
     total_length = 12 + 8 + len(new_json_bytes) + 8 + len(bin_bytes)
     out = bytearray()
@@ -208,6 +208,136 @@ def _make_double_sided_skin_material(glb_path: Path):
     glb_path.write_bytes(bytes(out))
 
 
+def _add_vertex_colors(glb_path: Path, colors):
+    """이미 쓰여진 glb를 다시 열어 정점 색(COLOR_0)을 추가한다. Y Bot은 갑옷 판(청록)과
+    관절 구(어두운 메탈릭 회색)의 실제 재질이 서로 다른데(2026-09-16, 사용자가 렌더 보고
+    "조인트는 검은색인가봐"라고 확인해줌), 지금까지는 메시 전체를 재질 하나(청록)로
+    뭉개서 관절도 청록색으로 나왔다. glTF는 COLOR_0가 있으면 baseColorFactor와 곱해서
+    쓰므로, 재질의 baseColorFactor는 흰색으로 두고 정점 색으로만 실제 색을 낸다
+    (_make_double_sided_skin_material이 colors 유무를 보고 처리)."""
+    if not colors:
+        return
+    data = glb_path.read_bytes()
+    gltf, bin_bytes = _read_glb_chunks(data)
+    prim = gltf["meshes"][0]["primitives"][0]
+
+    flat = []
+    for c in colors:
+        flat.extend((c[0], c[1], c[2], c[3] if len(c) > 3 else 1.0))
+    color_bytes = struct.pack(f"<{len(flat)}f", *flat)
+    while len(bin_bytes) % 4 != 0:
+        bin_bytes.append(0)
+    view_offset = len(bin_bytes)
+    bin_bytes.extend(color_bytes)
+
+    gltf["bufferViews"].append({
+        "buffer": 0, "byteOffset": view_offset, "byteLength": len(color_bytes),
+    })
+    gltf["accessors"].append({
+        "bufferView": len(gltf["bufferViews"]) - 1,
+        "componentType": 5126, "count": len(colors), "type": "VEC4",
+    })
+    prim["attributes"]["COLOR_0"] = len(gltf["accessors"]) - 1
+    gltf["buffers"][0]["byteLength"] = len(bin_bytes)
+
+    _write_glb_chunks(glb_path, gltf, bin_bytes)
+
+
+def _add_smooth_normals(glb_path: Path):
+    """이미 쓰여진 glb를 다시 열어 부드러운 정점 법선(NORMAL)을 계산해 추가한다 —
+    export_glb.py(벤더 원본)는 NORMAL 속성을 아예 안 넣는다. glTF 스펙상 없으면 뷰어가
+    자동으로 계산해야 하지만 뷰어마다 처리가 달라(Blender 임포터는 문제없이 보였지만
+    <model-viewer>가 그런다는 보장이 없음) — 뷰어에 맡기지 않고 직접 계산해서 넣는다.
+    (2026-09-16: 실제로는 "조인트가 검게 나온다"는 사용자 보고의 원인이 이게 아니라
+    재질이 하나로 뭉개진 것으로 밝혀졌지만 — 정점 법선을 직접 넣는 건 스펙 준수 차원에서
+    맞는 방향이라 그대로 둠, `_add_vertex_colors` 참고.)"""
+    data = glb_path.read_bytes()
+    gltf, bin_bytes = _read_glb_chunks(data)
+
+    prim = gltf["meshes"][0]["primitives"][0]
+    if "NORMAL" in prim["attributes"]:
+        return  # 이미 있음
+
+    pos_acc = gltf["accessors"][prim["attributes"]["POSITION"]]
+    idx_acc = gltf["accessors"][prim["indices"]]
+    pv = gltf["bufferViews"][pos_acc["bufferView"]]
+    iv = gltf["bufferViews"][idx_acc["bufferView"]]
+
+    n = pos_acc["count"]
+    pos_bytes = bytes(bin_bytes[pv["byteOffset"]:pv["byteOffset"] + pv["byteLength"]])
+    positions = struct.unpack(f"<{n * 3}f", pos_bytes)
+    idx_bytes = bytes(bin_bytes[iv["byteOffset"]:iv["byteOffset"] + iv["byteLength"]])
+    indices = struct.unpack(f"<{idx_acc['count']}H", idx_bytes)
+
+    normals = [[0.0, 0.0, 0.0] for _ in range(n)]
+    for t in range(0, len(indices), 3):
+        i0, i1, i2 = indices[t], indices[t + 1], indices[t + 2]
+        p0 = positions[i0 * 3:i0 * 3 + 3]
+        p1 = positions[i1 * 3:i1 * 3 + 3]
+        p2 = positions[i2 * 3:i2 * 3 + 3]
+        ux, uy, uz = p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]
+        vx, vy, vz = p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]
+        # 정규화 안 한 크로스 곱 — 삼각형 넓이만큼 가중치가 실려서 자연스럽게 평균됨.
+        nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+        for i in (i0, i1, i2):
+            normals[i][0] += nx
+            normals[i][1] += ny
+            normals[i][2] += nz
+
+    norm_flat = []
+    for nx, ny, nz in normals:
+        length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if length < 1e-12:
+            norm_flat.extend((0.0, 1.0, 0.0))
+        else:
+            norm_flat.extend((nx / length, ny / length, nz / length))
+
+    normal_bytes = struct.pack(f"<{len(norm_flat)}f", *norm_flat)
+    while len(bin_bytes) % 4 != 0:
+        bin_bytes.append(0)
+    view_offset = len(bin_bytes)
+    bin_bytes.extend(normal_bytes)
+
+    gltf["bufferViews"].append({
+        "buffer": 0, "byteOffset": view_offset, "byteLength": len(normal_bytes),
+    })
+    gltf["accessors"].append({
+        "bufferView": len(gltf["bufferViews"]) - 1,
+        "componentType": 5126, "count": n, "type": "VEC3",
+    })
+    prim["attributes"]["NORMAL"] = len(gltf["accessors"]) - 1
+    gltf["buffers"][0]["byteLength"] = len(bin_bytes)
+
+    _write_glb_chunks(glb_path, gltf, bin_bytes)
+
+
+def _make_double_sided_skin_material(glb_path: Path, base_color=None, has_vertex_colors=False):
+    """이미 쓰여진 glb를 다시 열어 doubleSided 재질을 하나 추가한다 — 캡슐 옆면
+    삼각형 감김 방향이 어느 한쪽에서 틀려도 안 보이는 면이 생기지 않도록 하는 안전장치.
+    base_color를 안 주면(=Mixamo 데이터가 없어서 캡슐만 쓸 때) 살구색 기본값을 쓴다.
+    has_vertex_colors=True면(=_add_vertex_colors로 COLOR_0을 이미 넣은 경우)
+    baseColorFactor는 흰색으로 둔다 — glTF는 COLOR_0을 baseColorFactor와 곱하므로,
+    여기서 또 색을 넣으면 이중으로 곱해져 색이 틀어진다."""
+    data = glb_path.read_bytes()
+    gltf, bin_bytes = _read_glb_chunks(data)
+
+    factor = [1.0, 1.0, 1.0, 1.0] if has_vertex_colors else (
+        list(base_color) if base_color else [0.75, 0.66, 0.58, 1.0])
+    gltf["materials"] = [{
+        "name": "KimodoPreviewDoll",
+        "doubleSided": True,
+        "pbrMetallicRoughness": {
+            "baseColorFactor": factor,
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.9,
+        },
+    }]
+    for primitive in gltf["meshes"][0]["primitives"]:
+        primitive["material"] = 0
+
+    _write_glb_chunks(glb_path, gltf, bin_bytes)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export Kimodo motion to a preview GLB with a capsule-doll mesh")
     parser.add_argument("--motion-dir", default="output_motion")
@@ -217,8 +347,22 @@ def main():
     args = parser.parse_args()
 
     output_path = Path(args.output)
+
+    bind = _load_mixamo_bind()
+    if bind is not None and "offsets" in bind:
+        # Mixamo 자체 본 길이로 SOMA30 offsets를 바꿔치기 — 메시(Mixamo 원본 좌표)와
+        # 스켈레톤이 서로 다른 비율이면 관절 경계마다 이음매가 갈라져 보이는 문제가 있어서
+        # (2026-09-16 실측), extract_mixamo_soma30.py가 이미 새 offsets를 계산해뒀다.
+        export_glb.SKELETONS[args.model]["offsets"] = bind["offsets"]
+
     export_glb.convert_motion_to_glb(Path(args.motion_dir), output_path, skeleton_key=args.model, fps=args.fps)
-    _make_double_sided_skin_material(output_path)
+    _add_smooth_normals(output_path)
+    _add_vertex_colors(output_path, _last_vertex_colors)
+    _make_double_sided_skin_material(
+        output_path,
+        base_color=bind.get("base_color") if bind else None,
+        has_vertex_colors=bool(_last_vertex_colors),
+    )
 
 
 if __name__ == "__main__":
