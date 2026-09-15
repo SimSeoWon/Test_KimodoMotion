@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>kimodo-motion</title>
+<link rel="stylesheet" href="/static/style.css">
+<script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>kimodo<span>-motion</span></h1>
+  <div id="status-banner" class="banner" hidden></div>
+</header>
+
+<main>
+  <section class="panel params-panel">
+    <label>프롬프트 (Prompt)</label>
+    <textarea id="prompt" rows="4" placeholder="a person walking forward enthusiastically and waving their right hand"></textarea>
+
+    <div class="row">
+      <div class="field">
+        <label>프레임 수 <span id="frame-count-val">120</span></label>
+        <input type="range" id="frame-count-range" min="30" max="300" step="10" value="120">
+        <input type="number" id="frame-count" min="1" max="600" value="120">
+      </div>
+      <div class="field">
+        <label>Steps <span id="steps-val">50</span></label>
+        <input type="range" id="steps-range" min="10" max="150" step="5" value="50">
+        <input type="number" id="steps" min="1" max="500" value="50">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Seed</label>
+        <div class="seed-row">
+          <input type="number" id="seed" value="42">
+          <button type="button" id="seed-random" title="랜덤 시드">🎲</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>백엔드 (Backend)</label>
+        <select id="backend">
+          <option value="vulkan" selected>Vulkan (GPU, RTX 3080)</option>
+          <option value="cpu">CPU</option>
+        </select>
+      </div>
+    </div>
+
+    <details class="advanced">
+      <summary>고급 옵션</summary>
+      <div class="field">
+        <label>모델 경로 (.gguf)</label>
+        <input type="text" id="model-path" placeholder="vendor\kimodo.cpp\models\kimodo-soma-rp-v1.1-f32.gguf">
+      </div>
+      <div class="field">
+        <label>텍스트 번들 경로</label>
+        <input type="text" id="text-bundle-path" placeholder="vendor\kimodo.cpp\generated\llm2vec-text-bundle">
+      </div>
+    </details>
+
+    <button id="generate-btn" class="generate-btn">Generate</button>
+    <div id="progress" class="progress" hidden>생성 중... (수 분 걸릴 수 있음)</div>
+    <div id="error" class="error" hidden></div>
+  </section>
+
+  <section class="panel viewer-panel">
+    <model-viewer id="viewer" camera-controls auto-rotate autoplay
+      animation-name="" exposure="1" shadow-intensity="1"
+      style="width:100%; height:420px; background:#111;">
+      <div slot="poster" class="viewer-empty">아직 생성된 애니메이션이 없습니다</div>
+    </model-viewer>
+    <div id="info" class="info"></div>
+    <a id="download-link" class="download-link" hidden download>animation.glb 다운로드</a>
+  </section>
+</main>
+
+<section class="history">
+  <h2>히스토리</h2>
+  <div id="history-list" class="history-list"></div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

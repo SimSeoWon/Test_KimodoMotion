@@ -23,3 +23,8 @@ __pycache__/
 # --- KimodoTestbed — 로컬 실험용 UE5.8 프로젝트. 통째로 git 밖에 둔다 ---
 # 결과물은 git이 아니라 UE5 Export/Migrate로 별도 반출한다 (사용자 결정 2026-09-15).
 KimodoTestbed/
+
+# Mixamo 원본/가공 에셋 — Adobe 라이선스상 원본 재배포 금지, 이 리포는 배포 가능해야 함
+# (SOMA만 쓰고 SMPL-X 뺀 것과 같은 이유). mixamo.com에서 사용자가 직접 받는다 (2026-09-16).
+assets/mixamo_src/
+assets/mixamo_processed/

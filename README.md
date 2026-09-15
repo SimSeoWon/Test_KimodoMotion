@@ -60,6 +60,38 @@ cmake --build vendor\kimodo.cpp\build --config Release
 CPU로 강제하려면 `KIMODO_BACKEND=cpu` (스크립트의 `-Backend cpu`가 이걸 설정한다) — Vulkan
 빌드에서도 이 값이 서 있으면 CPU 백엔드로 떨어진다.
 
+## 웹 UI
+
+Stable Diffusion WebUI 식으로 파라미터(프롬프트/프레임 수/Steps/Seed/백엔드)를 채우고
+Generate를 누르면 결과 `animation.glb`를 브라우저에서 바로 재생해서 보여주는 로컬 웹 서버.
+외부 의존성 없이 Python 표준 라이브러리만 쓴다(Flask 등 불필요).
+
+```powershell
+py webui\server.py            # 기본 포트 8188
+# 브라우저에서 http://127.0.0.1:8188/ 접속
+```
+
+`kmd-generate.exe`를 그대로 호출하고(내부적으로 `generate-motion.ps1`과 같은 파이프라인),
+glb로 내보낼 때는 `export_glb.py`가 아니라 `scripts/pretty_export_glb.py`를 쓴다 — 원본은
+관절마다 작은 큐브만 찍는 뼈대 시각화용 메시라 미리보기에 사람이 안 보여서, 웹 UI 전용으로
+바꾼 버전이다(vendor 서브모듈은 안 건드림, UE5 임포트 경로는 그대로 원본을 씀 — 자세한
+이유는 `CLAUDE.md` 참고). 실제 미리보기 메시는 두 단계로 구성:
+
+1. **Mixamo 캐릭터 메시**(있으면 우선 사용) — `assets/mixamo_src/`에 사용자가 mixamo.com에서
+   직접 받은 캐릭터(Y Bot 등, FBX·With Skin·T-pose)를 두면, `assets/extract_mixamo_soma30.py`
+   (Blender headless, 한 번만 실행)가 그 메시를 SOMA30 레스트 좌표계로 재배치해서
+   `assets/mixamo_processed/`에 바인딩 데이터를 뽑아둔다. **둘 다 git에 안 올라감** — Mixamo
+   원본 재배포 금지 라이선스 때문(SOMA만 쓰고 SMPL-X 뺀 것과 같은 이유).
+2. **캡슐 래그돌 폴백** — 위 바인딩 데이터가 없거나, Mixamo 표준 리그에 대응 본이 없는
+   조인트(목/턱/눈)는 관절을 잇는 저폴리 캡슐로 채운다.
+
+생성 결과는
+`output_motion/generations/<타임스탬프>_<슬러그>/`에 `animation.glb` +
+`meta.json`(프롬프트/파라미터/소요시간)으로 저장되고 히스토리에 쌓인다 — 전부 `.gitignore` 대상.
+동시에 두 개 이상 생성이 돌지 않도록 서버가 직렬화한다. UnrealEditor가 떠 있는 상태에서
+Vulkan 백엔드를 쓰면 상단에 경고 배너가 뜬다(자동으로 막지는 않음 — `generate-motion.ps1`과
+같은 정책).
+
 ## 모델 다운로드
 
 ```powershell
