@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>kimodo-motion</title>
 <link rel="stylesheet" href="/static/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
 <script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
 </head>
 <body>
@@ -15,23 +23,60 @@
 
 <main>
   <section class="panel params-panel">
-    <label>프롬프트 (Prompt)</label>
-    <textarea id="prompt" rows="4" placeholder="a person walking forward enthusiastically and waving their right hand"></textarea>
+    <div class="row preset-row">
+      <select id="preset-select"><option value="">프리셋 불러오기...</option></select>
+      <button type="button" id="preset-save" title="현재 프롬프트를 프리셋으로 저장">💾 저장</button>
+      <button type="button" id="preset-delete" title="선택한 프리셋 삭제">🗑 삭제</button>
+    </div>
 
-    <div class="row">
+    <div class="field full">
+      <label><input type="checkbox" id="storyboard-toggle"> 스토리보드 모드 (여러 프롬프트를 순서대로 이어붙이기)</label>
+    </div>
+
+    <div id="single-prompt-panel">
+      <label>프롬프트 (Prompt)</label>
+      <textarea id="prompt" rows="4" placeholder="a person walking forward enthusiastically and waving their right hand"></textarea>
+      <p class="hint">짧고 동작 동사 위주로 — 이 모델은 그렇게 학습됐어요. 사진/영화 촬영 묘사
+        (카메라 앵글·조명·배경·의상 디테일 등)처럼 긴 문장은 토큰 한도(511개)엔 안 걸려도
+        관절이 깨지는 원인이 될 수 있어요.</p>
+
+      <div class="caption-row">
+        <label for="caption-image-input">사진에서 캡션 뽑기 (로컬 BLIP, 실험적)</label>
+        <input type="file" id="caption-image-input" accept="image/*">
+      </div>
+      <p id="caption-status" class="hint" hidden></p>
+
+      <label>부정 프롬프트 (Negative Prompt, 실험적)</label>
+      <textarea id="negative-prompt" rows="2" placeholder="예: standing still, no movement"></textarea>
+
       <div class="field">
         <label>프레임 수 <span id="frame-count-val">120</span></label>
         <input type="range" id="frame-count-range" min="30" max="300" step="10" value="120">
         <input type="number" id="frame-count" min="1" max="600" value="120">
       </div>
+    </div>
+
+    <div id="storyboard-panel" hidden>
+      <div class="field">
+        <label>타임라인 미리보기 (클릭하면 해당 구간으로 이동)</label>
+        <div id="timeline-bar" class="timeline-bar"></div>
+      </div>
+      <div class="field">
+        <label>전환 프레임 (구간 사이를 부드럽게 이어붙일 프레임 수)</label>
+        <input type="number" id="transition-frames" min="1" max="60" value="15">
+      </div>
+      <div id="segment-list"></div>
+      <button type="button" id="add-segment-btn" class="secondary-btn">+ 구간 추가</button>
+      <p class="hint">각 구간 프롬프트도 짧고 동작 동사 위주로 — 긴 사진/영화 촬영 묘사는
+        관절이 깨지는 원인이 될 수 있어요.</p>
+    </div>
+
+    <div class="row">
       <div class="field">
         <label>Steps <span id="steps-val">50</span></label>
         <input type="range" id="steps-range" min="10" max="150" step="5" value="50">
         <input type="number" id="steps" min="1" max="500" value="50">
       </div>
-    </div>
-
-    <div class="row">
       <div class="field">
         <label>Seed</label>
         <div class="seed-row">
@@ -39,17 +84,32 @@
           <button type="button" id="seed-random" title="랜덤 시드">🎲</button>
         </div>
       </div>
-      <div class="field">
-        <label>백엔드 (Backend)</label>
-        <select id="backend">
-          <option value="vulkan" selected>Vulkan (GPU, RTX 3080)</option>
-          <option value="cpu">CPU</option>
-        </select>
-      </div>
+    </div>
+
+    <div class="field full">
+      <label>백엔드 (Backend)</label>
+      <select id="backend">
+        <option value="vulkan" selected>Vulkan (GPU, RTX 3080)</option>
+        <option value="cpu">CPU</option>
+      </select>
+    </div>
+
+    <div class="field full">
+      <label>미리보기 캐릭터 (Mixamo)</label>
+      <select id="mixamo-model"></select>
     </div>
 
     <details class="advanced">
       <summary>고급 옵션</summary>
+      <div class="field">
+        <label>배치 개수 (한 번에 N개 생성, 최대 8)</label>
+        <input type="number" id="batch-count" min="1" max="8" value="1">
+      </div>
+      <div class="field">
+        <label>프롬프트 강도 / CFG <span id="text-cfg-val">2.0</span></label>
+        <input type="range" id="text-cfg-range" min="0" max="8" step="0.1" value="2.0">
+        <input type="number" id="text-cfg" min="0" max="20" step="0.1" value="2.0">
+      </div>
       <div class="field">
         <label>모델 경로 (.gguf)</label>
         <input type="text" id="model-path" placeholder="vendor\kimodo.cpp\models\kimodo-soma-rp-v1.1-f32.gguf">
@@ -60,17 +120,52 @@
       </div>
     </details>
 
-    <button id="generate-btn" class="generate-btn">Generate</button>
+    <div class="generate-row">
+      <button id="generate-btn" class="generate-btn">Generate</button>
+      <button id="cancel-btn" class="cancel-btn" hidden>취소</button>
+    </div>
     <div id="progress" class="progress" hidden>생성 중... (수 분 걸릴 수 있음)</div>
     <div id="error" class="error" hidden></div>
   </section>
 
   <section class="panel viewer-panel">
-    <model-viewer id="viewer" camera-controls auto-rotate autoplay
+    <div class="posing-toolbar">
+      <button type="button" id="posing-toggle" class="secondary-btn">포징 모드</button>
+    </div>
+    <div id="posing-panel" class="posing-panel" hidden>
+      <div class="posing-tools">
+        <button type="button" data-pose-mode="select" class="active" title="선택 (Q)">선택</button>
+        <button type="button" data-pose-mode="translate" title="이동 (W)">이동</button>
+        <button type="button" data-pose-mode="rotate" title="회전 (E)">회전</button>
+        <button type="button" id="pose-space" title="기즈모 좌표계">Local</button>
+        <button type="button" id="pose-undo" title="실행 취소 (Ctrl+Z)">↶</button>
+        <button type="button" id="pose-redo" title="다시 실행 (Ctrl+Y)">↷</button>
+        <button type="button" id="pose-reset">포즈 초기화</button>
+      </div>
+      <div id="pose-canvas" class="pose-canvas"></div>
+      <div class="pose-selection-row">
+        <span>선택: <b id="pose-selection">없음</b></span>
+        <label>프레임 <input id="pose-frame" type="number" min="0" max="299" value="0"></label>
+        <input id="pose-label" type="text" maxlength="80" placeholder="키포즈 이름">
+        <button type="button" id="pose-save">키포즈 저장</button>
+        <button type="button" id="pose-delete">삭제</button>
+      </div>
+      <div class="pose-preset-row">
+        <select id="pose-preset"><option value="">포즈 프리셋...</option></select>
+        <button type="button" id="pose-preset-apply">현재 프레임에 배치</button>
+        <button type="button" id="pose-preset-save">현재 포즈 저장</button>
+        <button type="button" id="pose-preset-delete">삭제</button>
+      </div>
+      <div id="pose-controls" class="pose-controls"></div>
+      <div id="pose-keyposes" class="pose-keyposes"></div>
+      <p id="pose-status" class="hint" role="status">캐릭터를 불러오는 중...</p>
+    </div>
+    <model-viewer id="viewer" camera-controls autoplay
       animation-name="" exposure="1" shadow-intensity="1"
       style="width:100%; height:420px; background:#111;">
-      <div slot="poster" class="viewer-empty">아직 생성된 애니메이션이 없습니다</div>
+      <div slot="poster" class="viewer-empty">모델 불러오는 중...</div>
     </model-viewer>
+    <div id="viewer-caption" class="viewer-caption" hidden></div>
     <div id="info" class="info"></div>
     <a id="download-link" class="download-link" hidden download>animation.glb 다운로드</a>
   </section>

@@ -92,6 +92,26 @@ glb로 내보낼 때는 `export_glb.py`가 아니라 `scripts/pretty_export_glb.
 Vulkan 백엔드를 쓰면 상단에 경고 배너가 뜬다(자동으로 막지는 않음 — `generate-motion.ps1`과
 같은 정책).
 
+### 포징 모드와 AI 조작
+
+웹 UI의 `포징 모드`를 열면 SOMA30 캐릭터의 골반·가슴·고개·양어깨·양팔꿈치·양손·양무릎·양발을
+선택해 이동/회전 기즈모로 키포즈를 만들 수 있다. 부모 관절 회전은 순수 FK로 모든 자식에게
+전파되고, 손·발·팔꿈치·무릎 이동은 뼈 길이를 유지하는 IK 보정으로 동작한다. 키포즈는 프레임별로
+저장되며 Generate 요청 시 Kimodo의 희소 위치/회전 제약으로 전달된다. 단일 프롬프트와
+스토리보드 구간 생성 모두 지원한다.
+
+Claude Code는 저장소의 `.mcp.json`을 승인하면 `kimodo-keypose` 도구를 사용할 수 있다.
+다른 MCP 클라이언트에는 다음 stdio 서버를 등록한다.
+
+```powershell
+py scripts\keypose_mcp.py
+```
+
+MCP 도구로 현재 포즈 조회, 키포즈 생성·복사·삭제, 13개 컨트롤 이동/회전, 포즈 프리셋
+저장·타임라인 배치, undo/redo를
+수행할 수 있다. AI나 HTTP API의 변경은 실행 중인 포징 UI에 자동 반영되며, 웹에서 만든
+키포즈와 같은 `webui/keypose.py` schema 및 검증기를 공유한다.
+
 ## 모델 다운로드
 
 ```powershell

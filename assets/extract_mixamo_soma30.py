@@ -25,9 +25,24 @@ Y Bot은 메시가 2개다 — `Alpha_Surface`(갑옷 판)와 `Alpha_Joints`(그
 애니메이션 가중치용으로만 쓰고 위치는 재배치하지 않는다.
 
     "Blender 5.2\\blender.exe" --background --python assets\\extract_mixamo_soma30.py
+
+여러 Mixamo 캐릭터를 웹 UI 콤보박스에서 고를 수 있게 하려면(2026-09-17), 인자 없이 돌리면
+지금까지처럼 Y Bot을 처리하고, 다른 캐릭터는 `--fbx`/`--out`으로 지정한다(Blender는 스크립트
+인자를 `--` 뒤에 받는다):
+
+    "Blender 5.2\\blender.exe" --background --python assets\\extract_mixamo_soma30.py -- ^
+        --fbx "assets\\mixamo_src\\Warrior.fbx" --out "assets\\mixamo_processed\\warrior_soma30_bind.json"
+
+`--out`을 생략하면 fbx 파일 이름에서 자동으로 만든다(`Warrior.fbx` -> `warrior_soma30_bind.json`).
+MIXAMO_TO_SOMA/SOMA_TO_MIXAMO_POS는 Mixamo 오토리거가 어느 캐릭터에나 똑같이 붙이는
+`mixamorig:` 본 이름 기준이라 그대로 재사용되고, 메시(들)도 이름을 고정하지 않고 armature
+아래 있는 걸 전부 자동으로 찾아 합친다(Y Bot처럼 갑옷 판+관절 구로 나뉜 캐릭터도, 메시가
+하나뿐인 캐릭터도 둘 다 됨) — 단, vertex group이 MIXAMO_TO_SOMA에 없는 본을 쓰면(표준
+Mixamo 휴머노이드 리그가 아니면) 바로 에러로 멈춘다(추측해서 뭉개지 않음).
 """
 import bpy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -35,8 +50,33 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "vendor" / "kimodo.cpp" / "scripts"))
 import export_glb  # noqa: E402  (vendor 모듈, 디스크상 파일은 안 건드림)
 
-FBX_PATH = REPO_ROOT / "assets" / "mixamo_src" / "Y Bot.fbx"
-OUT_PATH = REPO_ROOT / "assets" / "mixamo_processed" / "ybot_soma30_bind.json"
+
+def _parse_script_args() -> dict:
+    """Blender는 자기 인자와 스크립트 인자를 `--`로 구분해서 sys.argv에 같이 넘긴다."""
+    argv = sys.argv
+    argv = argv[argv.index("--") + 1:] if "--" in argv else []
+    out = {}
+    it = iter(argv)
+    for tok in it:
+        if tok == "--fbx":
+            out["fbx"] = next(it, None)
+        elif tok == "--out":
+            out["out"] = next(it, None)
+    return out
+
+
+def _slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "character"
+
+
+_script_args = _parse_script_args()
+FBX_PATH = Path(_script_args["fbx"]) if _script_args.get("fbx") else REPO_ROOT / "assets" / "mixamo_src" / "Y Bot.fbx"
+if _script_args.get("out"):
+    OUT_PATH = Path(_script_args["out"])
+elif _script_args.get("fbx"):
+    OUT_PATH = REPO_ROOT / "assets" / "mixamo_processed" / f"{_slugify(FBX_PATH.stem)}_soma30_bind.json"
+else:
+    OUT_PATH = REPO_ROOT / "assets" / "mixamo_processed" / "ybot_soma30_bind.json"  # 하위호환(인자 없이 호출)
 
 # 2026-09-16 Blender 5.2로 Y Bot.fbx를 실측 확인한 vertex group 이름 -> SOMA30 조인트 인덱스.
 # SOMA30 순서: 0 Hips,1 Spine1,2 Spine2,3 Chest,4 Neck1,5 Neck2,6 Head,7 Jaw,8 LeftEye,
@@ -125,8 +165,8 @@ def main():
             arm_obj = obj
         if obj.type == "MESH":
             mesh_objs[obj.name] = obj
-    if arm_obj is None or "Alpha_Surface" not in mesh_objs:
-        raise RuntimeError("Armature 또는 Alpha_Surface 메시를 찾지 못했다")
+    if arm_obj is None or not mesh_objs:
+        raise RuntimeError("Armature 또는 메시를 찾지 못했다")
 
     def to_gltf_up(v):
         # Blender는 Z-up, glTF(따라서 SOMA30 SKELETONS 오프셋)는 Y-up이다.
@@ -180,29 +220,23 @@ def main():
                 return list(node.inputs["Base Color"].default_value)
         return fallback
 
-    # Y Bot은 재질도 2개다 — Alpha_Surface(갑옷 판)는 청록색, Alpha_Joints(그 틈을 메우는
-    # 관절 구)는 어두운 회색/메탈릭(거의 검정) — 사용자가 "조인트는 검은색"이라고 확인해준
-    # 그대로. 하나로 뭉개지 않고 정점마다 원본 메시의 색을 그대로 들고 간다(COLOR_0로
-    # pretty_export_glb.py가 심음).
-    mesh_colors = {
-        "Alpha_Surface": get_base_color(mesh_objs.get("Alpha_Surface")),
-        "Alpha_Joints": get_base_color(mesh_objs.get("Alpha_Joints")),
-    }
-    base_color = mesh_colors["Alpha_Surface"]  # 캡슐 폴백 등 기본값으로 계속 씀
+    # 메시가 여러 개인 캐릭터(Y Bot=갑옷 판+관절 구처럼)도, 하나뿐인 캐릭터도 다 되게
+    # armature 아래 메시를 이름 고정 없이 전부 자동으로 찾아 하나로 합친다. 정점 수가
+    # 제일 많은 메시(보통 몸통 본체)를 base_color 기본값으로 쓴다 — 하나로 뭉개지 않고
+    # 정점마다 원본 메시의 색을 그대로 들고 간다(COLOR_0로 pretty_export_glb.py가 심음).
+    mesh_items = sorted(mesh_objs.items(), key=lambda kv: -len(kv[1].data.vertices))
+    mesh_colors = {name: get_base_color(obj) for name, obj in mesh_items}
+    base_color = mesh_colors[mesh_items[0][0]]
 
     out_vertices = []
     out_joint_index = []
     out_colors = []
     indices = []
 
-    # Y Bot은 메시가 2개(갑옷 판 Alpha_Surface + 그 틈을 메우는 관절 구 Alpha_Joints) —
-    # 둘 다 SOMA30 조인트에 매핑해서 하나로 합친다. 두 메시 다 Mixamo 원본 좌표를 그대로
+    # 모든 메시를 SOMA30 조인트에 매핑해서 하나로 합친다. Mixamo 원본 좌표를 그대로
     # 쓴다(재배치 없음) — offsets를 이미 Mixamo 치수로 바꿔놨으니 스켈레톤과 메시가
     # 서로 딱 맞는다(재배치하면 오히려 손가락처럼 여러 본이 한 점으로 뭉친다).
-    for mesh_name in ("Alpha_Surface", "Alpha_Joints"):
-        obj = mesh_objs.get(mesh_name)
-        if obj is None:
-            continue
+    for mesh_name, obj in mesh_items:
         mesh = obj.data
         group_names = [vg.name for vg in obj.vertex_groups]
         missing = sorted(set(group_names) - set(MIXAMO_TO_SOMA.keys()))
@@ -241,6 +275,7 @@ def main():
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(json.dumps({
+        "label": FBX_PATH.stem,  # 웹 UI 콤보박스에 보여줄 이름 (예: "Y Bot")
         "vertices": out_vertices,
         "joint_index": out_joint_index,
         "colors": out_colors,

@@ -2,21 +2,26 @@
 """vendor/kimodo.cpp/scripts/export_glb.py 의 "본마다 작은 큐브" 메시 대신, 웹 UI
 미리보기용 메시로 내보낸다.
 
-assets/mixamo_processed/ybot_soma30_bind.json(assets/extract_mixamo_soma30.py로 한 번만
-생성하는, Mixamo Y Bot 메시를 SOMA30 레스트 좌표계로 재배치한 정점/조인트 바인딩)이 있으면
+assets/mixamo_processed/*_soma30_bind.json(assets/extract_mixamo_soma30.py로 한 번만
+생성하는, Mixamo 캐릭터 메시를 SOMA30 레스트 좌표계로 재배치한 정점/조인트 바인딩)이 있으면
 그걸 쓰고, 없으면 관절을 잇는 저폴리 캡슐 래그돌로 대신한다. Mixamo 데이터에 대응이 없는
 조인트(Neck1/Neck2/Jaw/LeftEye/RightEye — Mixamo 표준 리그엔 목/턱/눈 본이 따로 없음)는
 Mixamo 메시를 쓸 때도 캡슐로 메운다.
 
+캐릭터가 여러 개일 수 있어서(2026-09-17, 웹 UI 콤보박스) `--mixamo-bind`로 어느 바인딩을
+쓸지 고른다 — 생략하면 하위호환으로 ybot_soma30_bind.json을 찾고, `--mixamo-bind none`이면
+있어도 무시하고 캡슐만 쓴다(웹 UI가 "캡슐" 옵션을 고를 때 씀).
+
 vendor 서브모듈(핀 고정 커밋)은 건드리지 않는다 — export_glb 모듈을 그대로 import해서
 create_bone_mesh()만 몽키패치하고, 애니메이션/스킨/역바인드행렬 등 나머지 로직은 전부
-vendor 원본을 그대로 재사용한다. CLI 인자는 vendor 스크립트와 동일
-(--motion-dir/--output/--model/--fps) — generate-motion.ps1/README의 UE5 임포트
-파이프라인에는 영향 없음(그쪽은 SOMA 쪽 메시를 쓰지 않고 리타겟으로 UE 마네킹 메시를
-쓰기 때문에 웹 미리보기 전용으로만 이 스크립트를 쓴다).
+vendor 원본을 그대로 재사용한다. CLI 인자는 vendor 스크립트에 `--mixamo-bind`만 추가한 것
+— generate-motion.ps1/README의 UE5 임포트 파이프라인에는 영향 없음(그쪽은 SOMA 쪽 메시를
+쓰지 않고 리타겟으로 UE 마네킹 메시를 쓰기 때문에 웹 미리보기 전용으로만 이 스크립트를 쓴다).
 
-사용법은 vendor/kimodo.cpp/scripts/export_glb.py와 동일:
+사용법:
     py scripts\\pretty_export_glb.py --motion-dir output_motion --output output_motion\\animation.glb
+    py scripts\\pretty_export_glb.py ... --mixamo-bind assets\\mixamo_processed\\warrior_soma30_bind.json
+    py scripts\\pretty_export_glb.py ... --mixamo-bind none   # 캡슐 강제
 """
 
 import argparse
@@ -31,8 +36,12 @@ _VENDOR_SCRIPTS = _REPO_ROOT / "vendor" / "kimodo.cpp" / "scripts"
 sys.path.insert(0, str(_VENDOR_SCRIPTS))
 import export_glb  # noqa: E402  (vendor 모듈, 디스크상 파일은 안 건드림)
 
+# 하위호환 기본값(--mixamo-bind 없이 호출하는 기존 코드/문서용). main()이 --mixamo-bind로
+# 이 모듈 전역 _selected_bind_path를 덮어쓴다 — create_preview_mesh()가 export_glb 쪽에서
+# 콜백으로 불릴 때는 인자를 못 받으므로(vendor 시그니처 고정) 전역으로 전달한다.
 _MIXAMO_BIND_PATH = _REPO_ROOT / "assets" / "mixamo_processed" / "ybot_soma30_bind.json"
-# Mixamo Y Bot 표준 리그엔 대응 본이 없어서 캡슐로 메우는 조인트(soma30 인덱스).
+_selected_bind_path = _MIXAMO_BIND_PATH
+# Mixamo 표준 리그엔 대응 본이 없어서 캡슐로 메우는 조인트(soma30 인덱스) — 어느 캐릭터든 같다.
 _CAPSULE_ONLY_JOINTS = {4, 5, 7, 8, 9}  # Neck1, Neck2, Jaw, LeftEye, RightEye
 
 # soma30 고정 조인트 순서(0=Hips..29=RightToeBase, vendor의 SKELETONS["soma30"]["names"]와
@@ -131,9 +140,9 @@ def create_capsule_doll_mesh(global_pos, parents, joints_filter=None):
 
 
 def _load_mixamo_bind():
-    if not _MIXAMO_BIND_PATH.exists():
+    if _selected_bind_path is None or not _selected_bind_path.exists():
         return None
-    return json.loads(_MIXAMO_BIND_PATH.read_text(encoding="utf-8"))
+    return json.loads(_selected_bind_path.read_text(encoding="utf-8"))
 
 
 # create_bone_mesh()의 반환 시그니처(vertices, joints, weights, indices)엔 색을 넣을 자리가
@@ -339,12 +348,23 @@ def _make_double_sided_skin_material(glb_path: Path, base_color=None, has_vertex
 
 
 def main():
+    global _selected_bind_path
+
     parser = argparse.ArgumentParser(description="Export Kimodo motion to a preview GLB with a capsule-doll mesh")
     parser.add_argument("--motion-dir", default="output_motion")
     parser.add_argument("--output", default="output_motion/animation.glb")
     parser.add_argument("--model", default="soma30", choices=["soma30"])
     parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument("--mixamo-bind", default=None,
+                         help="쓸 Mixamo 바인딩 json 경로. 'none'이면 있어도 무시하고 캡슐만. "
+                              "생략하면 하위호환으로 ybot_soma30_bind.json을 찾는다.")
     args = parser.parse_args()
+
+    if args.mixamo_bind == "none":
+        _selected_bind_path = None
+    elif args.mixamo_bind:
+        _selected_bind_path = Path(args.mixamo_bind)
+    # else: 위에서 정한 하위호환 기본값(_MIXAMO_BIND_PATH) 그대로 둠
 
     output_path = Path(args.output)
 

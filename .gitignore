@@ -28,3 +28,15 @@ KimodoTestbed/
 # (SOMA만 쓰고 SMPL-X 뺀 것과 같은 이유). mixamo.com에서 사용자가 직접 받는다 (2026-09-16).
 assets/mixamo_src/
 assets/mixamo_processed/
+
+# webui/server.py가 실행 중에 캐릭터별로 만드는 T포즈 미리보기 — 재생성 가능, 커밋 대상 아님.
+webui/_tpose_src/
+webui/static/tpose_*.glb
+
+# 사용자가 웹 UI에서 저장하는 프롬프트 프리셋 — 로컬 상태, 커밋 대상 아님.
+webui/prompt_presets.json
+
+# 사진 캡션 기능이 요청마다 잠깐 쓰는 업로드 임시 파일.
+webui/_caption_tmp/
+webui/keypose_agent_state.json
+webui/keypose_presets.json
