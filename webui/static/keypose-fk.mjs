@@ -84,3 +84,60 @@ export function quaternionFromAxisAngle(axis, radians) {
   const scale = Math.sin(radians / 2) / axisLength;
   return normalizeQuaternion([axis[0] * scale, axis[1] * scale, axis[2] * scale, Math.cos(radians / 2)]);
 }
+
+export function solveTwoBonePositions(root, target, pole, upperLength, lowerLength, maxFlexRadians) {
+  for (const [name, value] of Object.entries({root, target, pole})) {
+    if (!Array.isArray(value) || value.length !== 3 || value.some((item) => !Number.isFinite(item))) {
+      throw new TypeError(`${name} must contain three finite numbers`);
+    }
+  }
+  if (!(upperLength > 0) || !(lowerLength > 0)) throw new RangeError("bone lengths must be positive");
+  const delta = target.map((value, index) => value - root[index]);
+  const rawDistance = Math.hypot(...delta);
+  if (rawDistance < EPSILON) throw new RangeError("target must differ from root");
+  const direction = delta.map((value) => value / rawDistance);
+  const minDistance = Math.sqrt(
+    upperLength ** 2 + lowerLength ** 2 + 2 * upperLength * lowerLength * Math.cos(maxFlexRadians),
+  );
+  const distance = Math.min(Math.max(rawDistance, minDistance), upperLength + lowerLength - EPSILON);
+  let perpendicular = pole.map((value, index) => value - direction[index]
+    * pole.reduce((sum, item, poleIndex) => sum + item * direction[poleIndex], 0));
+  let perpendicularLength = Math.hypot(...perpendicular);
+  if (perpendicularLength < EPSILON) throw new RangeError("pole must not be parallel to target direction");
+  perpendicular = perpendicular.map((value) => value / perpendicularLength);
+  const along = (upperLength ** 2 + distance ** 2 - lowerLength ** 2) / (2 * distance);
+  const height = Math.sqrt(Math.max(0, upperLength ** 2 - along ** 2));
+  const joint = root.map((value, index) => value + direction[index] * along + perpendicular[index] * height);
+  const end = root.map((value, index) => value + direction[index] * distance);
+  return {joint, end};
+}
+
+export function solveTwoBoneWithJointHint(
+  root, target, jointHint, forwardPole, upperLength, lowerLength, maxFlexRadians,
+) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (let step = 0; step <= 20; step += 1) {
+    const amount = step / 20;
+    const pole = forwardPole.map((value, index) => value * (1 - amount)
+      + (jointHint[index] - root[index]) * amount);
+    let solved;
+    try {
+      solved = solveTwoBonePositions(root, target, pole, upperLength, lowerLength, maxFlexRadians);
+    } catch (_) {
+      continue;
+    }
+    // Keep the knee laterally between hip and ankle. This prevents the hip
+    // from being forced open by an over-wide knee pole.
+    const lateralMin = Math.min(root[0], solved.end[0]) - 1e-6;
+    const lateralMax = Math.max(root[0], solved.end[0]) + 1e-6;
+    if (solved.joint[0] < lateralMin || solved.joint[0] > lateralMax) continue;
+    const distance = Math.hypot(...solved.joint.map((value, index) => value - jointHint[index]));
+    if (distance < bestDistance) {
+      best = solved;
+      bestDistance = distance;
+    }
+  }
+  if (best) return best;
+  return solveTwoBonePositions(root, target, forwardPole, upperLength, lowerLength, maxFlexRadians);
+}

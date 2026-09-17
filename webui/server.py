@@ -22,19 +22,24 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 try:
-    from keypose import KeyposeValidationError, get_keypose_schema, validate_keypose_document
+    from keypose import KeyposeValidationError, get_keypose_schema, validate_keypose_document, validate_pose_asset
 except ModuleNotFoundError:  # Allows `import webui.server` in tests as well as direct script launch.
-    from webui.keypose import KeyposeValidationError, get_keypose_schema, validate_keypose_document
+    from webui.keypose import KeyposeValidationError, get_keypose_schema, validate_keypose_document, validate_pose_asset
 try:
     from keypose_agent import STORE as KEYPOSE_STORE
 except ModuleNotFoundError:
     from webui.keypose_agent import STORE as KEYPOSE_STORE
+try:
+    from pose_agent import POSE_AGENT
+except ModuleNotFoundError:
+    from webui.pose_agent import POSE_AGENT
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -337,7 +342,25 @@ def load_keypose_presets() -> list:
         return []
     try:
         items = json.loads(KEYPOSE_PRESETS_FILE.read_text(encoding="utf-8"))
-        return items if isinstance(items, list) else []
+        if not isinstance(items, list):
+            return []
+        result = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            # Legacy presets had only name + controls. Derive a stable ID without
+            # rewriting the user's local file during a read.
+            candidate = {
+                "schema_version": item.get("schema_version", 1),
+                "id": item.get("id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"kimodo-pose:{item.get('name', '')}")),
+                "name": item.get("name", ""),
+                "controls": item.get("controls"),
+            }
+            try:
+                result.append(validate_pose_asset(candidate))
+            except KeyposeValidationError:
+                continue
+        return result
     except Exception:
         return []
 
@@ -617,6 +640,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(get_keypose_schema())
             elif path == "/api/keyposes/state":
                 self._send_json(KEYPOSE_STORE.state())
+            elif path == "/api/pose-agent/state":
+                self._send_json(POSE_AGENT.state())
             elif path == "/api/keypose-presets":
                 self._send_json({"items": load_keypose_presets()})
             elif path == "/api/tpose":
@@ -655,6 +680,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"valid": False, "error": "invalid JSON body"}, 400)
             return
 
+        if path == "/api/pose-agent/command":
+            try:
+                body = self._read_json_body()
+                self._send_json(POSE_AGENT.submit(
+                    body.get("instruction", ""),
+                    body.get("pose"),
+                    body.get("snapshot"),
+                ), 202)
+            except KeyposeValidationError as exc:
+                self._send_json({"error": str(exc)}, 400)
+            except Exception:
+                self._send_json({"error": "포즈 에이전트 작업을 시작하지 못했습니다."}, 500)
+            return
+
         if path == "/api/keyposes/command":
             try:
                 body = self._read_json_body()
@@ -678,16 +717,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/keypose-presets":
             try:
                 body = self._read_json_body()
-                name = (body.get("name") or "").strip()
-                controls = body.get("controls")
-                if not name or len(name) > 80 or not isinstance(controls, dict):
-                    raise KeyposeValidationError("프리셋 이름과 controls가 필요합니다.")
-                validated = validate_keypose_document({
-                    "schema_version": 1,
-                    "keyposes": [{"frame": 0, "label": name, "controls": controls}],
-                })["keyposes"][0]
-                items = [item for item in load_keypose_presets() if item.get("name") != name]
-                items.append({"name": name, "controls": validated["controls"]})
+                requested = body.get("pose", body)
+                name = (requested.get("name") or "").strip()
+                existing = next((item for item in load_keypose_presets() if item.get("name") == name), None)
+                candidate = {
+                    "schema_version": requested.get("schema_version", 1),
+                    "id": requested.get("id") or (existing or {}).get("id") or str(uuid.uuid4()),
+                    "name": name,
+                    "controls": requested.get("controls"),
+                }
+                validated = validate_pose_asset(candidate)
+                items = [item for item in load_keypose_presets() if item.get("id") != validated["id"] and item.get("name") != name]
+                items.append(validated)
                 items.sort(key=lambda item: item["name"])
                 save_keypose_presets(items)
                 self._send_json({"items": items})

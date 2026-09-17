@@ -41,8 +41,17 @@ const els = {
   segmentList: $("segment-list"),
   addSegmentBtn: $("add-segment-btn"),
   timelineBar: $("timeline-bar"),
-  posingToggle: $("posing-toggle"),
   posingPanel: $("posing-panel"),
+  animationWorkspace: $("animation-workspace"),
+  poseWorkspace: $("pose-workspace"),
+  animationHistory: $("animation-history"),
+  openPoseWorkspace: $("open-pose-workspace"),
+  animationPosePreset: $("animation-pose-preset"),
+  animationPoseFrame: $("animation-pose-frame"),
+  animationPoseAdd: $("animation-pose-add"),
+  animationPoseTimeline: $("animation-pose-timeline"),
+  animationKeyposes: $("animation-keyposes"),
+  animationPoseStatus: $("animation-pose-status"),
 };
 
 function syncRangeAndNumber(range, number, label) {
@@ -94,6 +103,102 @@ function escapeHtml(s) {
 }
 
 const TIMELINE_COLORS = ["#5b9dff", "#4fd18b", "#ffb84f", "#ff6b9d", "#a78bfa", "#4fd1c5"];
+const animationKeyposes = new Map();
+let posePresetItems = [];
+
+function animationFrameCount() {
+  if (els.storyboardToggle.checked) {
+    return collectSegments().reduce((sum, segment) => sum + (segment.frame_count || 0), 0);
+  }
+  return Math.max(1, parseInt(els.frameCount.value, 10) || 1);
+}
+
+function animationPoseDocument() {
+  return {
+    schema_version: 1,
+    keyposes: [...animationKeyposes.values()].sort((a, b) => a.frame - b.frame),
+  };
+}
+
+function renderAnimationPoses() {
+  const frameCount = animationFrameCount();
+  els.animationPoseFrame.max = String(Math.max(0, frameCount - 1));
+  els.animationPoseTimeline.innerHTML = "";
+  els.animationKeyposes.innerHTML = "";
+  const poses = [...animationKeyposes.values()].sort((a, b) => a.frame - b.frame);
+  for (const pose of poses) {
+    const marker = document.createElement("button");
+    marker.type = "button";
+    marker.className = "pose-track-marker";
+    marker.style.left = `${frameCount <= 1 ? 0 : (pose.frame / (frameCount - 1)) * 100}%`;
+    marker.title = `${pose.frame}f · ${pose.label || "포즈"}`;
+    marker.textContent = "◆";
+    marker.addEventListener("click", () => { els.animationPoseFrame.value = pose.frame; });
+    els.animationPoseTimeline.appendChild(marker);
+
+    const chip = document.createElement("div");
+    chip.className = "animation-keypose";
+    const label = document.createElement("span");
+    label.textContent = `${pose.frame}f · ${pose.label || "포즈"}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "삭제";
+    remove.addEventListener("click", async () => {
+      animationKeyposes.delete(pose.frame);
+      renderAnimationPoses();
+      await publishAnimationPoses();
+    });
+    chip.append(label, remove);
+    els.animationKeyposes.appendChild(chip);
+  }
+  els.animationPoseStatus.textContent = poses.length
+    ? `${poses.length}개 포즈가 애니메이션 타임라인에 배치되었습니다.`
+    : "배치된 포즈가 없습니다.";
+}
+
+async function publishAnimationPoses() {
+  const response = await fetch("/api/keyposes/document", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({document: animationPoseDocument(), frame_count: animationFrameCount()}),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "포즈 트랙 저장 실패");
+}
+
+async function loadAnimationPoseState() {
+  try {
+    const response = await fetch("/api/keyposes/state");
+    const state = await response.json();
+    if (!response.ok) return;
+    animationKeyposes.clear();
+    for (const pose of state.document.keyposes || []) animationKeyposes.set(pose.frame, pose);
+    renderAnimationPoses();
+  } catch (_) {
+    renderAnimationPoses();
+  }
+}
+
+function updateAnimationPosePresets(items) {
+  posePresetItems = items || [];
+  const selected = els.animationPosePreset.value;
+  els.animationPosePreset.innerHTML = '<option value="">저장된 포즈 선택...</option>';
+  for (const preset of posePresetItems) {
+    const option = document.createElement("option");
+    option.value = preset.name;
+    option.textContent = preset.name;
+    els.animationPosePreset.appendChild(option);
+  }
+  if (posePresetItems.some((item) => item.name === selected)) els.animationPosePreset.value = selected;
+}
+
+async function loadAnimationPosePresets() {
+  try {
+    const response = await fetch("/api/keypose-presets");
+    const data = await response.json();
+    updateAnimationPosePresets(data.items || []);
+  } catch (_) { updateAnimationPosePresets([]); }
+}
 
 function addSegmentRow(frameCount, promptText) {
   const row = document.createElement("div");
@@ -156,6 +261,7 @@ function collectSegments() {
 // 그 상태를 그대로 반영하는 읽기 전용 미리보기라 드래그 리사이즈 등 입력 로직 중복이 없다.
 function renderTimeline() {
   const segments = collectSegments();
+  renderAnimationPoses();
   els.timelineBar.innerHTML = "";
   if (segments.length === 0) {
     const empty = document.createElement("div");
@@ -329,7 +435,7 @@ els.generateBtn.addEventListener("click", async () => {
     body.frame_count = parseInt(els.frameCount.value, 10);
     body.negative_prompt = els.negativePrompt.value || undefined;
   }
-  if (poseEditor) body.keyposes = poseEditor.getDocument();
+  if (animationKeyposes.size) body.keyposes = animationPoseDocument();
 
   els.generateBtn.disabled = true;
   els.cancelBtn.hidden = false;
@@ -372,6 +478,32 @@ els.cancelBtn.addEventListener("click", async () => {
 
 els.storyboardToggle.addEventListener("change", toggleStoryboardPanels);
 els.addSegmentBtn.addEventListener("click", () => addSegmentRow(60, ""));
+els.frameCount.addEventListener("input", renderAnimationPoses);
+els.frameCountRange.addEventListener("input", renderAnimationPoses);
+
+els.animationPoseAdd.addEventListener("click", async () => {
+  const preset = posePresetItems.find((item) => item.name === els.animationPosePreset.value);
+  const frame = Number.parseInt(els.animationPoseFrame.value, 10);
+  if (!preset) {
+    els.animationPoseStatus.textContent = "먼저 저장된 포즈를 선택하세요.";
+    return;
+  }
+  if (!Number.isInteger(frame) || frame < 0 || frame >= animationFrameCount()) {
+    els.animationPoseStatus.textContent = `프레임은 0~${animationFrameCount() - 1} 범위여야 합니다.`;
+    return;
+  }
+  const previous = animationKeyposes.get(frame);
+  animationKeyposes.set(frame, {frame, label: preset.name, controls: structuredClone(preset.controls)});
+  renderAnimationPoses();
+  try {
+    await publishAnimationPoses();
+    els.animationPoseStatus.textContent = `'${preset.name}' 포즈를 ${frame}프레임에 배치했습니다.`;
+  } catch (error) {
+    if (previous) animationKeyposes.set(frame, previous); else animationKeyposes.delete(frame);
+    renderAnimationPoses();
+    els.animationPoseStatus.textContent = error.message;
+  }
+});
 
 els.presetSelect.addEventListener("change", () => {
   const p = presetItems.find((item) => item.name === els.presetSelect.value);
@@ -446,13 +578,7 @@ els.backend.addEventListener("change", refreshStatus);
 els.mixamoModel.addEventListener("change", showTposePreview);
 
 let poseEditor = null;
-els.posingToggle.addEventListener("click", async () => {
-  const opening = els.posingPanel.hidden;
-  els.posingPanel.hidden = !opening;
-  els.viewer.hidden = opening;
-  els.viewerCaption.hidden = opening || els.viewerCaption.textContent === "";
-  els.posingToggle.textContent = opening ? "포징 모드 닫기" : "포징 모드";
-  if (!opening) return;
+async function initializePoseEditor() {
   if (!poseEditor) {
     const poseStatus = $("pose-status");
     try {
@@ -460,9 +586,7 @@ els.posingToggle.addEventListener("click", async () => {
       const { createKeyposeEditor } = await import("/static/keypose-editor.mjs");
       poseEditor = await createKeyposeEditor({
         modelUrl: () => "/api/tpose?model=" + encodeURIComponent(els.mixamoModel.value || "capsule"),
-        frameCount: () => els.storyboardToggle.checked
-          ? collectSegments().reduce((sum, segment) => sum + (segment.frame_count || 0), 0)
-          : parseInt(els.frameCount.value, 10),
+        onPresetsChanged: updateAnimationPosePresets,
       });
     } catch (error) {
       console.error("포징 편집기 초기화 실패", error);
@@ -470,8 +594,26 @@ els.posingToggle.addEventListener("click", async () => {
       poseEditor = null;
     }
   }
-});
+}
 
+function switchWorkspace(name) {
+  const poseOpen = name === "pose";
+  els.animationWorkspace.hidden = poseOpen;
+  els.animationHistory.hidden = poseOpen;
+  els.poseWorkspace.hidden = !poseOpen;
+  for (const tab of document.querySelectorAll("[data-workspace]")) {
+    const active = tab.dataset.workspace === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  if (poseOpen) initializePoseEditor();
+  else loadAnimationPosePresets();
+}
+
+for (const tab of document.querySelectorAll("[data-workspace]")) {
+  tab.addEventListener("click", () => switchWorkspace(tab.dataset.workspace));
+}
+els.openPoseWorkspace.addEventListener("click", () => switchWorkspace("pose"));
 // 서버가 T포즈 미리보기를 못 만들었을 수 있음(Blender/Mixamo 리소스 없음 등) — 그때는
 // 조용히 빈 화면 대신 안내 문구로 대체한다.
 els.viewer.addEventListener("error", () => {
@@ -485,3 +627,5 @@ refreshStatus();
 refreshHistory();
 loadMixamoModels();
 loadPresets();
+loadAnimationPosePresets();
+loadAnimationPoseState();

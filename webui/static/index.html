@@ -21,7 +21,12 @@
   <div id="status-banner" class="banner" hidden></div>
 </header>
 
-<main>
+<nav class="workspace-tabs" aria-label="작업 창">
+  <button type="button" class="workspace-tab active" data-workspace="animation" aria-selected="true">애니메이션 생성</button>
+  <button type="button" class="workspace-tab" data-workspace="pose" aria-selected="false">포즈 생성</button>
+</nav>
+
+<main id="animation-workspace" class="workspace">
   <section class="panel params-panel">
     <div class="row preset-row">
       <select id="preset-select"><option value="">프리셋 불러오기...</option></select>
@@ -70,6 +75,24 @@
       <p class="hint">각 구간 프롬프트도 짧고 동작 동사 위주로 — 긴 사진/영화 촬영 묘사는
         관절이 깨지는 원인이 될 수 있어요.</p>
     </div>
+
+    <section class="pose-track" aria-labelledby="pose-track-title">
+      <div class="section-heading">
+        <div>
+          <h2 id="pose-track-title">포즈 트랙</h2>
+          <p>포즈 생성 창에서 만든 단일 프레임 포즈를 애니메이션 타임라인에 배치합니다.</p>
+        </div>
+        <button type="button" id="open-pose-workspace" class="compact-btn">포즈 만들기</button>
+      </div>
+      <div class="pose-placement-row">
+        <select id="animation-pose-preset"><option value="">저장된 포즈 선택...</option></select>
+        <label>프레임 <input id="animation-pose-frame" type="number" min="0" max="119" value="0"></label>
+        <button type="button" id="animation-pose-add">타임라인에 배치</button>
+      </div>
+      <div id="animation-pose-timeline" class="pose-track-bar"></div>
+      <div id="animation-keyposes" class="animation-keyposes"></div>
+      <p id="animation-pose-status" class="hint" role="status">배치된 포즈가 없습니다.</p>
+    </section>
 
     <div class="row">
       <div class="field">
@@ -129,37 +152,6 @@
   </section>
 
   <section class="panel viewer-panel">
-    <div class="posing-toolbar">
-      <button type="button" id="posing-toggle" class="secondary-btn">포징 모드</button>
-    </div>
-    <div id="posing-panel" class="posing-panel" hidden>
-      <div class="posing-tools">
-        <button type="button" data-pose-mode="select" class="active" title="선택 (Q)">선택</button>
-        <button type="button" data-pose-mode="translate" title="이동 (W)">이동</button>
-        <button type="button" data-pose-mode="rotate" title="회전 (E)">회전</button>
-        <button type="button" id="pose-space" title="기즈모 좌표계">Local</button>
-        <button type="button" id="pose-undo" title="실행 취소 (Ctrl+Z)">↶</button>
-        <button type="button" id="pose-redo" title="다시 실행 (Ctrl+Y)">↷</button>
-        <button type="button" id="pose-reset">포즈 초기화</button>
-      </div>
-      <div id="pose-canvas" class="pose-canvas"></div>
-      <div class="pose-selection-row">
-        <span>선택: <b id="pose-selection">없음</b></span>
-        <label>프레임 <input id="pose-frame" type="number" min="0" max="299" value="0"></label>
-        <input id="pose-label" type="text" maxlength="80" placeholder="키포즈 이름">
-        <button type="button" id="pose-save">키포즈 저장</button>
-        <button type="button" id="pose-delete">삭제</button>
-      </div>
-      <div class="pose-preset-row">
-        <select id="pose-preset"><option value="">포즈 프리셋...</option></select>
-        <button type="button" id="pose-preset-apply">현재 프레임에 배치</button>
-        <button type="button" id="pose-preset-save">현재 포즈 저장</button>
-        <button type="button" id="pose-preset-delete">삭제</button>
-      </div>
-      <div id="pose-controls" class="pose-controls"></div>
-      <div id="pose-keyposes" class="pose-keyposes"></div>
-      <p id="pose-status" class="hint" role="status">캐릭터를 불러오는 중...</p>
-    </div>
     <model-viewer id="viewer" camera-controls autoplay
       animation-name="" exposure="1" shadow-intensity="1"
       style="width:100%; height:420px; background:#111;">
@@ -171,7 +163,54 @@
   </section>
 </main>
 
-<section class="history">
+<main id="pose-workspace" class="workspace pose-workspace" hidden>
+  <section class="panel pose-editor-panel">
+    <div class="section-heading pose-heading">
+      <div>
+        <h2>단일 프레임 포즈</h2>
+        <p>시간축 없이 한 자세만 만듭니다. 저장한 뒤 애니메이션 창의 포즈 트랙에 배치하세요.</p>
+      </div>
+      <span class="context-badge">애니메이션 창의 미리보기 캐릭터 사용</span>
+    </div>
+    <div id="posing-panel" class="posing-panel">
+      <section class="pose-agent-panel" aria-labelledby="pose-agent-title">
+        <div>
+          <h3 id="pose-agent-title">AI 포즈 명령</h3>
+          <p>현재 화면의 자세를 기준으로 LLM 서브 에이전트가 포즈를 조절합니다.</p>
+        </div>
+        <div class="pose-agent-command">
+          <textarea id="pose-agent-instruction" rows="2" placeholder="예: 하체를 낮추고 마보 자세를 취해. 상체는 정면을 유지해."></textarea>
+          <button type="button" id="pose-agent-submit">포즈 조절</button>
+        </div>
+        <p id="pose-agent-status" class="hint" role="status">명령을 입력하면 현재 포즈 스냅샷과 함께 WebUI 데몬으로 전달됩니다.</p>
+        <div class="pose-agent-history-heading">이 포즈에 저장된 AI 요청</div>
+        <div id="pose-agent-history" class="pose-agent-history" aria-label="포즈에 저장된 AI 요청 목록"></div>
+      </section>
+      <div class="posing-tools">
+        <button type="button" data-pose-mode="select" class="active" title="선택 (Q)">선택</button>
+        <button type="button" data-pose-mode="translate" title="이동 (W)">이동</button>
+        <button type="button" data-pose-mode="rotate" title="회전 (E)">회전</button>
+        <button type="button" id="pose-space" title="기즈모 좌표계">Local</button>
+        <button type="button" id="pose-reset">새 포즈 / 초기화</button>
+      </div>
+      <div id="pose-canvas" class="pose-canvas"></div>
+      <div class="pose-selection-row">
+        <span>선택: <b id="pose-selection">없음</b></span>
+        <input id="pose-label" type="text" maxlength="80" placeholder="포즈 이름 (예: 낮은 마보 자세)">
+        <button type="button" id="pose-preset-save">이 포즈 저장</button>
+      </div>
+      <div class="pose-preset-row">
+        <select id="pose-preset"><option value="">저장된 포즈 불러오기...</option></select>
+        <button type="button" id="pose-preset-load">불러오기</button>
+        <button type="button" id="pose-preset-delete">삭제</button>
+      </div>
+      <div id="pose-controls" class="pose-controls"></div>
+      <p id="pose-status" class="hint" role="status">캐릭터를 불러오는 중...</p>
+    </div>
+  </section>
+</main>
+
+<section id="animation-history" class="history">
   <h2>히스토리</h2>
   <div id="history-list" class="history-list"></div>
 </section>

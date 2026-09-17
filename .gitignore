@@ -39,4 +39,5 @@ webui/prompt_presets.json
 # 사진 캡션 기능이 요청마다 잠깐 쓰는 업로드 임시 파일.
 webui/_caption_tmp/
 webui/keypose_agent_state.json
+webui/pose_agent_state.json
 webui/keypose_presets.json

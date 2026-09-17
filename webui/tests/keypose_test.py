@@ -9,18 +9,63 @@ sys.path.insert(0, str(WEBUI_DIR))
 from keypose import (  # noqa: E402
     CONTROLS,
     KeyposeValidationError,
+    PoseAsset,
+    PoseConstraint,
     get_keypose_schema,
+    placements_to_keypose_document,
     validate_keypose_document,
+    validate_pose_asset,
+    validate_pose_placement,
 )
 
 
 class KeyposeContractTest(unittest.TestCase):
+    def test_pose_asset_is_frame_free(self):
+        pose = validate_pose_asset({
+            "schema_version": 1,
+            "id": "horse-stance",
+            "name": "낮은 마보 자세",
+            "frame": 24,
+            "controls": {"pelvis": {"position": [0, 0.8, 0]}},
+        })
+        self.assertNotIn("frame", pose)
+        self.assertEqual("horse-stance", pose["id"])
+
+    def test_pose_dataclasses_express_asset_and_constraints(self):
+        constraint = PoseConstraint(position=(0.0, 1.0, 0.0))
+        pose = PoseAsset(id="ready", name="준비", controls={"pelvis": constraint})
+        self.assertEqual("ready", pose.id)
+        self.assertFalse(hasattr(pose, "frame"))
+
+    def test_placement_keeps_asset_identity_and_builds_runtime_document(self):
+        placement = validate_pose_placement({
+            "frame": 12,
+            "pose_id": "ready",
+            "pose_name": "준비",
+            "controls": {"pelvis": {"position": [0, 1, 0]}},
+        }, frame_count=30)
+        self.assertEqual("ready", placement["pose_id"])
+        document = placements_to_keypose_document([placement], frame_count=30)
+        self.assertEqual(12, document["keyposes"][0]["frame"])
+        self.assertEqual("준비", document["keyposes"][0]["label"])
+
     def test_basic_control_set_has_unique_ids_and_joint_indices(self):
-        self.assertEqual(13, len(CONTROLS))
-        self.assertEqual(13, len({item["id"] for item in CONTROLS}))
-        self.assertEqual(13, len({item["joint_index"] for item in CONTROLS}))
+        self.assertEqual(17, len(CONTROLS))
+        self.assertEqual(17, len({item["id"] for item in CONTROLS}))
+        self.assertEqual(17, len({item["joint_index"] for item in CONTROLS}))
         self.assertEqual("LeftShin", next(item for item in CONTROLS if item["id"] == "left_knee")["soma_joint"])
         self.assertEqual("RightShin", next(item for item in CONTROLS if item["id"] == "right_knee")["soma_joint"])
+        self.assertEqual("LeftToeBase", next(item for item in CONTROLS if item["id"] == "left_toe")["soma_joint"])
+        self.assertEqual("RightToeBase", next(item for item in CONTROLS if item["id"] == "right_toe")["soma_joint"])
+        pelvis = next(item for item in CONTROLS if item["id"] == "pelvis")
+        self.assertEqual("Hips", pelvis["soma_joint"])
+        self.assertEqual("root", pelvis["role"])
+        for control_id in ("chest", "head", "left_shoulder", "right_shoulder"):
+            self.assertEqual(["rotate"], next(item for item in CONTROLS if item["id"] == control_id)["modes"])
+        for control_id in ("left_hip", "right_hip"):
+            self.assertEqual(["rotate"], next(item for item in CONTROLS if item["id"] == control_id)["modes"])
+        for control_id in ("left_elbow", "right_elbow", "left_knee", "right_knee"):
+            self.assertEqual(["move"], next(item for item in CONTROLS if item["id"] == control_id)["modes"])
 
     def test_schema_is_detached_from_shared_definition(self):
         schema = get_keypose_schema()
