@@ -75,6 +75,33 @@ POSE_RESULT_SCHEMA = {
 }
 
 
+_HIP_TO_FOOT = {"left_hip": "left_foot", "right_hip": "right_foot"}
+
+
+def drop_redundant_hip_rotation(result: dict) -> dict:
+    """Strip an LLM-guessed hip rotation whenever that leg also has a foot target.
+
+    The two-bone leg IK re-aims the hip/knee toward the foot position regardless
+    of any hip rotation given here (it only rotates ancestors to hit the position
+    target) -- but it does so as a minimal rotation FROM whatever orientation the
+    hip already has, so a given rotation only contributes twist, never influences
+    where the ankle ends up. An LLM guess is often anatomically confused (a pure
+    yaw/internal-rotation twist instead of an abduction swing), and that twist
+    then survives the re-aim as a pigeon-toed-looking leg -- for both the "마보"
+    recipe and any other instruction (e.g. a plain "조금 더 낮게" follow-up) that
+    sets a foot position. Dropping it lets the IK re-derive the hip cleanly from
+    rest instead. A hip rotation with no matching foot position is meaningful
+    (e.g. a pure stance turn with the foot left alone) and is kept as-is.
+    """
+    controls = dict(result.get("controls") or {})
+    changed = False
+    for hip_id, foot_id in _HIP_TO_FOOT.items():
+        if hip_id in controls and controls.get(foot_id, {}).get("position"):
+            controls.pop(hip_id, None)
+            changed = True
+    return {**result, "controls": controls} if changed else result
+
+
 def apply_pose_recipe(instruction: str, result: dict, snapshot: dict) -> dict:
     """Apply deterministic anatomical constraints for named poses."""
     lowered = instruction.casefold()
@@ -95,6 +122,8 @@ def apply_pose_recipe(instruction: str, result: dict, snapshot: dict) -> dict:
         rest_right_toe = right_toe_state.get("rest_position", right_toe_state["position"])
         rest_left_knee = snapshot["left_knee"].get("rest_position", snapshot["left_knee"]["position"])
         rest_right_knee = snapshot["right_knee"].get("rest_position", snapshot["right_knee"]["position"])
+        rest_left_hip = snapshot["left_hip"].get("rest_position", snapshot["left_hip"]["position"])
+        rest_right_hip = snapshot["right_hip"].get("rest_position", snapshot["right_hip"]["position"])
         def distance(a, b):
             return sum((a[index] - b[index]) ** 2 for index in range(3)) ** 0.5
         leg_length = max(
@@ -119,24 +148,59 @@ def apply_pose_recipe(instruction: str, result: dict, snapshot: dict) -> dict:
         }
         left_foot_target = [pelvis_x + left_sign * half_width, rest_left_foot[1], rest_left_foot[2]]
         right_foot_target = [pelvis_x - left_sign * half_width, rest_right_foot[1], rest_right_foot[2]]
+        rest_left_foot_rot = left_foot_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
+        rest_right_foot_rot = right_foot_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
+        rest_left_toe_rot = left_toe_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
+        rest_right_toe_rot = right_toe_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
+        # The leg IK only rotates the hip/knee to aim the ankle; the ankle bone's own
+        # local rotation is left untouched, so it silently inherits whatever twist the
+        # knee bend picked up (pigeon-toed feet) unless a rotation target is given here
+        # to trigger the editor's separate end-effector-orientation pass.
         controls["left_foot"] = {
-            "position": left_foot_target,
+            "position": left_foot_target, "rotation_xyzw": rest_left_foot_rot,
             "space": "world", "weight": 1.0,
         }
         controls["right_foot"] = {
-            "position": right_foot_target,
+            "position": right_foot_target, "rotation_xyzw": rest_right_foot_rot,
             "space": "world", "weight": 1.0,
         }
         controls["left_toe"] = {
             "position": [rest_left_toe[0] + left_foot_target[0] - rest_left_foot[0], rest_left_toe[1], rest_left_toe[2]],
+            "rotation_xyzw": rest_left_toe_rot,
             "space": "world", "weight": 1.0,
         }
         controls["right_toe"] = {
             "position": [rest_right_toe[0] + right_foot_target[0] - rest_right_foot[0], rest_right_toe[1], rest_right_toe[2]],
+            "rotation_xyzw": rest_right_toe_rot,
             "space": "world", "weight": 1.0,
         }
-        controls.pop("left_knee", None)
-        controls.pop("right_knee", None)
+        # A knee position is a bend-plane hint for the two-bone leg IK, not a hard
+        # target. Track it toward the (now wide) ankle, at mid-height, and directly
+        # above the hip in Z (no forward lean) so the leg spreads sideways instead of
+        # jutting forward. Hip rotation is left to the IK entirely: it re-aims
+        # whatever orientation the hip already has toward this knee hint regardless
+        # of any rotation given here, but preserves twist around that aim axis while
+        # doing so, and an LLM-guessed hip rotation is often anatomically confused
+        # (e.g. a pure yaw/internal-rotation twist instead of abduction) — that
+        # twist would otherwise survive the re-aim as a pigeon-toed-looking leg.
+        left_hip_now = [rest_left_hip[0], rest_left_hip[1] + (target_pelvis_y - rest_pelvis[1]), rest_left_hip[2]]
+        right_hip_now = [rest_right_hip[0], rest_right_hip[1] + (target_pelvis_y - rest_pelvis[1]), rest_right_hip[2]]
+        controls["left_knee"] = {
+            "position": [
+                left_hip_now[0] + 0.8 * (left_foot_target[0] - left_hip_now[0]),
+                (left_hip_now[1] + left_foot_target[1]) / 2, left_hip_now[2],
+            ],
+            "space": "world", "weight": 1.0,
+        }
+        controls["right_knee"] = {
+            "position": [
+                right_hip_now[0] + 0.8 * (right_foot_target[0] - right_hip_now[0]),
+                (right_hip_now[1] + right_foot_target[1]) / 2, right_hip_now[2],
+            ],
+            "space": "world", "weight": 1.0,
+        }
+        controls.pop("left_hip", None)
+        controls.pop("right_hip", None)
         return {
             **result,
             "name": result.get("name") or "마보 자세",
@@ -185,6 +249,13 @@ explicitly asks to plant or pin that hand or foot in world space.
 LeftLeg/rightLeg are separate hip rotation controls. LeftFoot/rightFoot are ankle targets, while
 LeftToeBase/rightToeBase are separate ground-contact targets. Keep the matching toe at ground height and
 in front of the ankle. Do not impose a hard knee-versus-ankle position rule: solve joint angles instead.
+There is no separate heel or sole joint — LeftFoot/RightFoot is the whole rear/mid-foot plate from ankle
+through heel, as one rigid unit; heel and sole are expressed through the ankle's own position and rotation,
+never through the toe. A heel lift / tiptoe / releve ("뒤꿈치를 들어", "까치발") means: raise the ankle's Y
+position while keeping the matching toe's position near its current ground height (the toe stays the
+pivot), and rotate the ankle toward plantarflexion so the foot line follows. Flattening the sole against
+the ground ("발바닥을 지면에 붙여", "평평하게") means: return the ankle's rotation toward its rest
+orientation and its Y position to the toe's ground height, so the whole plate lies flat — not a toe change.
 Use conservative human ranges: hip flexion 120°, extension 15°, abduction 35°, adduction 15°; knee
 flexion 0–135° with no hyperextension; ankle dorsiflexion 20°, plantarflexion 50°, side tilt ±15°.
 For a horse stance, spread the legs with the ankle positions. Knee positions are bend hints: keep each
@@ -288,7 +359,8 @@ class PoseAgentDaemon:
             self._state["status"] = "running"
             self._revision += 1
         try:
-            result = apply_pose_recipe(instruction, self._runner(instruction, pose, snapshot), snapshot)
+            raw_result = drop_redundant_hip_rotation(self._runner(instruction, pose, snapshot))
+            result = apply_pose_recipe(instruction, raw_result, snapshot)
             normalized = validate_pose_asset({
                 "schema_version": SCHEMA_VERSION,
                 "id": pose["id"],

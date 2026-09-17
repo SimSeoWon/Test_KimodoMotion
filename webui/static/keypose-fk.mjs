@@ -127,11 +127,22 @@ export function solveTwoBoneWithJointHint(
     } catch (_) {
       continue;
     }
-    // Keep the knee laterally between hip and ankle. This prevents the hip
-    // from being forced open by an over-wide knee pole.
-    const lateralMin = Math.min(root[0], solved.end[0]) - 1e-6;
-    const lateralMax = Math.max(root[0], solved.end[0]) + 1e-6;
-    if (solved.joint[0] < lateralMin || solved.joint[0] > lateralMax) continue;
+    // Keep the knee on the same lateral side as the ankle. For a narrow/forward
+    // stance (ankle roughly under the hip) this still pins the knee between hip
+    // and ankle, exactly as before. For a spread stance the two-bone triangle can
+    // force a bend ("height") wider than the hip-ankle gap itself — rejecting
+    // that outright used to fall back to a near-straight, forward-jutting knee
+    // instead of a wide but correctly-sided one, so only the opposite-side
+    // crossing (the actually pathological case) is rejected there.
+    const ankleOffsetX = solved.end[0] - root[0];
+    const kneeOffsetX = solved.joint[0] - root[0];
+    if (Math.abs(ankleOffsetX) < 1e-3) {
+      const lateralMin = Math.min(root[0], solved.end[0]) - 1e-6;
+      const lateralMax = Math.max(root[0], solved.end[0]) + 1e-6;
+      if (solved.joint[0] < lateralMin || solved.joint[0] > lateralMax) continue;
+    } else if (Math.abs(kneeOffsetX) > 1e-3 && Math.sign(kneeOffsetX) !== Math.sign(ankleOffsetX)) {
+      continue;
+    }
     const distance = Math.hypot(...solved.joint.map((value, index) => value - jointHint[index]));
     if (distance < bestDistance) {
       best = solved;

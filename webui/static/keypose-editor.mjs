@@ -126,6 +126,70 @@ export async function createKeyposeEditor(options) {
   let modelRoot = null;
   let mode = "select";
   let usingIkTarget = false;
+  let activeTween = null;
+  let tweenQueue = [];
+  let tweenFinalMessage = "";
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2;
+  }
+
+  // Solves land straight on the final pose (bone-length-preserving math, no
+  // animation of their own). Snapshot before/after, rewind, and let the render
+  // loop tween local position/rotation per bone so a result is visible arriving
+  // rather than snapping in — this never touches IK/FK math, only playback.
+  function tweenToKeypose(applyInstant, label) {
+    const before = cloneBoneState(bones);
+    applyInstant();
+    const after = cloneBoneState(bones);
+    restoreBoneState(bones, before);
+    tweenQueue = [{before, after, duration: 450, label}];
+    advanceTweenQueue();
+  }
+
+  function advanceTweenQueue() {
+    const next = tweenQueue.shift();
+    if (!next) { activeTween = null; return; }
+    activeTween = {...next, start: performance.now()};
+    if (next.label) {
+      agentStatus.textContent = `반영 중: ${next.label}`;
+      const marker = markers.get(next.controlId);
+      if (marker) marker.material.color.setHex(selectedColor);
+    }
+  }
+
+  // Signal one changed control at a time instead of blending the whole pose at
+  // once, so a multi-part AI edit is legible part by part. applyKeyposeInstant
+  // always rebuilds from rest given a controls subset, so replaying it with an
+  // increasing prefix of `changed_controls` (schema order, so limb parents are
+  // applied before their IK children) yields well-defined intermediate poses —
+  // this never re-derives IK math of its own, only sequences existing results.
+  function playKeyposeEdit(poseAsset, finalMessage) {
+    const edit = poseAsset.edits?.[poseAsset.edits.length - 1];
+    tweenFinalMessage = finalMessage || "";
+    if (!edit || !edit.changed_controls?.length) { applyKeypose(poseAsset); return; }
+    const order = schema.controls.map((item) => item.id).filter((id) => edit.changed_controls.includes(id));
+    let previous = cloneBoneState(bones);
+    const initialBefore = previous;
+    const queue = [];
+    for (let index = 0; index < order.length; index += 1) {
+      const partialControls = {...poseAsset.controls};
+      for (let ahead = index + 1; ahead < order.length; ahead += 1) {
+        const id = order[ahead];
+        if (edit.before[id]) partialControls[id] = edit.before[id];
+        else delete partialControls[id];
+      }
+      restoreBoneState(bones, restState);
+      applyKeyposeInstant({controls: partialControls});
+      const after = cloneBoneState(bones);
+      const definition = schema.controls.find((item) => item.id === order[index]);
+      queue.push({before: previous, after, duration: 260, label: definition?.label || order[index], controlId: order[index]});
+      previous = after;
+    }
+    restoreBoneState(bones, initialBefore);
+    tweenQueue = queue;
+    advanceTweenQueue();
+  }
 
   const gltf = await new GLTFLoader().loadAsync(options.modelUrl());
   modelRoot = gltf.scene;
@@ -326,6 +390,8 @@ export async function createKeyposeEditor(options) {
   }
 
   transform.addEventListener("objectChange", () => {
+    activeTween = null;
+    tweenQueue = [];
     if (selected) {
       if (usingIkTarget) {
         const bone = bones.get(selected.soma_joint);
@@ -360,6 +426,8 @@ export async function createKeyposeEditor(options) {
       "현재 편집 중인 포즈의 관절 수정, 이름, AI 요청 기록을 모두 삭제하고 새 포즈로 초기화할까요?\n\n저장된 다른 포즈는 삭제되지 않습니다.",
     );
     if (!confirmed) return;
+    activeTween = null;
+    tweenQueue = [];
     restoreBoneState(bones, restState);
     constrained.clear();
     currentPoseRecord = {id: crypto.randomUUID(), revision: 0, edits: []};
@@ -412,6 +480,10 @@ export async function createKeyposeEditor(options) {
   }
 
   function applyKeypose(keypose) {
+    tweenToKeypose(() => applyKeyposeInstant(keypose));
+  }
+
+  function applyKeyposeInstant(keypose) {
     restoreBoneState(bones, restState);
     constrained.clear();
 
@@ -518,9 +590,8 @@ export async function createKeyposeEditor(options) {
       else if (state.status === "complete" && state.pose) {
         currentPoseRecord = structuredClone(state.pose);
         renderAgentHistory();
-        applyKeypose(state.pose);
+        playKeyposeEdit(state.pose, state.summary || "수정된 포즈를 화면에 반영했습니다.");
         labelInput.value = state.pose.name || labelInput.value;
-        agentStatus.textContent = state.summary || "수정된 포즈를 화면에 반영했습니다.";
         status.textContent = "AI가 수정한 포즈가 적용되었습니다. 기즈모로 이어서 보정할 수 있습니다.";
       }
     } catch (_) {
@@ -667,9 +738,39 @@ export async function createKeyposeEditor(options) {
   new ResizeObserver(resize).observe(container);
   resize();
 
+  function applyTweenFrame() {
+    if (!activeTween) return;
+    const {before, after, start, duration} = activeTween;
+    const t = easeInOutCubic(Math.min(1, (performance.now() - start) / duration));
+    for (const [name, target] of Object.entries(after)) {
+      const bone = bones.get(name);
+      const from = before[name];
+      if (!bone || !from) continue;
+      bone.position.lerpVectors(
+        new THREE.Vector3().fromArray(from.position), new THREE.Vector3().fromArray(target.position), t,
+      );
+      bone.quaternion.slerpQuaternions(
+        new THREE.Quaternion().fromArray(from.rotation_xyzw),
+        new THREE.Quaternion().fromArray(target.rotation_xyzw), t,
+      );
+    }
+    if (t >= 1) {
+      if (activeTween.controlId) {
+        const marker = markers.get(activeTween.controlId);
+        if (marker) marker.material.color.setHex(markerColor);
+      }
+      advanceTweenQueue();
+      if (!tweenQueue.length && !activeTween && tweenFinalMessage) {
+        agentStatus.textContent = tweenFinalMessage;
+        tweenFinalMessage = "";
+      }
+    }
+  }
+
   function animate() {
     requestAnimationFrame(animate);
     orbit.update();
+    applyTweenFrame();
     modelRoot.updateMatrixWorld(true);
     for (const definition of schema.controls) {
       const marker = markers.get(definition.id);

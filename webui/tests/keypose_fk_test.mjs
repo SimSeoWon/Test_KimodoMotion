@@ -117,4 +117,23 @@ assert.throws(() => computeWorldTransforms(
   assert.ok(solved.joint[0] <= -0.1 && solved.joint[0] >= solved.end[0], "knee must stay between hip and ankle");
 }
 
+// Regression: a wide stance (ankle spread far past the hip-ankle straight-line
+// reach) must bend the knee outward, not jut it forward. The fixed bone lengths
+// force a bend ("height") wider than the hip-ankle gap, so a knee hint with no
+// lateral signal of its own (almost collinear with hip->ankle) used to fall back
+// to a near-straight leg with the entire bend pushed toward the forward pole.
+{
+  const hip = [0.09124451130628586, 0.7508071545160437, -0.0005533625953830779];
+  const target = [0.34304174397025344, 0.10492202639579773, -0.026301046833395958];
+  const jointHint = [0.2963324000346724, 0.4004591235442252, -0.005709519609808922];
+  const forwardPole = [0.013481357496357238, -0.03458103260963905, 0.9993109652073805];
+  const solved = solveTwoBoneWithJointHint(
+    hip, target, jointHint, forwardPole, 0.40599429905363793, 0.4209902753729924, 5 * Math.PI / 6,
+  );
+  const kneeOffsetForward = solved.joint[2] - hip[2];
+  const kneeOffsetOutward = solved.joint[0] - hip[0];
+  assert.ok(kneeOffsetForward < 0.1, `knee must not jut forward in a wide stance (got ${kneeOffsetForward})`);
+  assert.ok(kneeOffsetOutward > 0.15, `knee must bend outward toward the wide ankle (got ${kneeOffsetOutward})`);
+}
+
 console.log("keypose FK tests passed");

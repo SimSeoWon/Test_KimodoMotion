@@ -6,14 +6,34 @@ from pathlib import Path
 WEBUI_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBUI_DIR))
 
-from pose_agent import POSE_RESULT_SCHEMA, PoseAgentDaemon, apply_pose_recipe  # noqa: E402
+from pose_agent import (  # noqa: E402
+    POSE_RESULT_SCHEMA, PoseAgentDaemon, apply_pose_recipe, drop_redundant_hip_rotation,
+)
 
 
 class PoseAgentDaemonTest(unittest.TestCase):
+    def test_drop_redundant_hip_rotation_only_when_foot_position_present(self):
+        # A follow-up like "조금 더 낮게" never repeats "마보", so it never reaches
+        # apply_pose_recipe -- this generic pass is what protects it too.
+        with_foot = drop_redundant_hip_rotation({"controls": {
+            "left_hip": {"rotation_xyzw": [0, 0.5, 0, 0.866]},
+            "left_foot": {"position": [0.3, 0.1, 0]},
+        }})
+        self.assertNotIn("left_hip", with_foot["controls"])
+        self.assertIn("left_foot", with_foot["controls"])
+
+        # No foot target on that leg -- a pure hip-rotation pose stays meaningful.
+        without_foot = drop_redundant_hip_rotation({"controls": {
+            "left_hip": {"rotation_xyzw": [0, 0.5, 0, 0.866]},
+        }})
+        self.assertIn("left_hip", without_foot["controls"])
+
     def test_horse_stance_recipe_spreads_feet_and_limits_pelvis_drop(self):
         identity = [0, 0, 0, 1]
         snapshot = {
             "pelvis": {"position": [0, 0.75, 0], "rest_position": [0, 1, 0], "rotation_xyzw": identity},
+            "left_hip": {"position": [0.05, 0.93, 0], "rest_position": [0.05, 0.93, 0]},
+            "right_hip": {"position": [-0.05, 0.93, 0], "rest_position": [-0.05, 0.93, 0]},
             "left_knee": {"position": [0.2, 0.4, 0], "rest_position": [0.05, 0.55, 0]},
             "right_knee": {"position": [-0.2, 0.4, 0], "rest_position": [-0.05, 0.55, 0]},
             "left_foot": {"position": [0.1, 0.1, 0], "rest_position": [0.1, 0.1, 0], "rotation_xyzw": identity, "rest_rotation_xyzw": identity},
@@ -23,7 +43,7 @@ class PoseAgentDaemonTest(unittest.TestCase):
         }
         result = apply_pose_recipe("마보 자세를 취해", {"name": "", "summary": "", "controls": {
             "pelvis": {"position": [0, 0.2, 0]},
-            "left_knee": {"position": [1, 0.2, 0]},
+            "left_hip": {"rotation_xyzw": [0, 0, 0.5, 0.866]},
         }}, snapshot)
         controls = result["controls"]
         self.assertGreater(controls["pelvis"]["position"][1], 0.81)
@@ -32,8 +52,14 @@ class PoseAgentDaemonTest(unittest.TestCase):
         self.assertLess(controls["right_foot"]["position"][0], -0.3)
         self.assertEqual(0, controls["left_toe"]["position"][1])
         self.assertAlmostEqual(controls["left_foot"]["position"][0], controls["left_toe"]["position"][0])
-        self.assertNotIn("left_knee", controls)
-        self.assertNotIn("right_knee", controls)
+        # The knee is a bend-plane hint (spread toward the now-wide ankle, no
+        # forward lean), not a hard target -- it stays present, unlike hip
+        # rotation, which the leg IK re-derives entirely on its own.
+        self.assertGreater(controls["left_knee"]["position"][0], 0.05)
+        self.assertLess(controls["left_knee"]["position"][0], controls["left_foot"]["position"][0])
+        self.assertAlmostEqual(controls["left_knee"]["position"][2], 0.0)
+        self.assertNotIn("left_hip", controls)
+        self.assertNotIn("right_hip", controls)
 
     def test_knee_output_is_position_only(self):
         knee = POSE_RESULT_SCHEMA["properties"]["controls"]["properties"]["left_knee"]
