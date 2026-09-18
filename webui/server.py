@@ -17,11 +17,13 @@ import os
 import random
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,9 +39,11 @@ try:
 except ModuleNotFoundError:
     from webui.keypose_agent import STORE as KEYPOSE_STORE
 try:
-    from pose_agent import POSE_AGENT
+    from pose_agent import POSE_AGENT, POSE_CLI_RUNTIME
+    from diagnostic_log import DiagnosticRun
 except ModuleNotFoundError:
-    from webui.pose_agent import POSE_AGENT
+    from webui.pose_agent import POSE_AGENT, POSE_CLI_RUNTIME
+    from webui.diagnostic_log import DiagnosticRun
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -337,7 +341,7 @@ def save_presets(items: list) -> None:
     PRESETS_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def load_keypose_presets() -> list:
+def load_saved_poses() -> list:
     if not KEYPOSE_PRESETS_FILE.exists():
         return []
     try:
@@ -355,6 +359,8 @@ def load_keypose_presets() -> list:
                 "id": item.get("id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"kimodo-pose:{item.get('name', '')}")),
                 "name": item.get("name", ""),
                 "controls": item.get("controls"),
+                "revision": item.get("revision", 0),
+                "edits": item.get("edits", []),
             }
             try:
                 result.append(validate_pose_asset(candidate))
@@ -365,7 +371,7 @@ def load_keypose_presets() -> list:
         return []
 
 
-def save_keypose_presets(items: list) -> None:
+def save_saved_poses(items: list) -> None:
     KEYPOSE_PRESETS_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -409,7 +415,7 @@ def load_history() -> list:
 FRAMES_STDOUT_RE = re.compile(r"generated (\d+) frames")
 
 
-def run_generation(params: dict) -> dict:
+def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
     global cancel_requested
     with current_process_lock:
         cancel_requested = False
@@ -455,6 +461,19 @@ def run_generation(params: dict) -> dict:
     text_bundle = Path(params.get("text_bundle") or DEFAULT_TEXT_BUNDLE)
     mixamo_models = list_mixamo_models()
     mixamo_model = params.get("mixamo_model") or default_mixamo_model_id(mixamo_models)
+    diagnostic.event("validated", settings={
+        "sequence_mode": sequence_mode,
+        "frame_count": frame_count,
+        "steps": steps,
+        "seed": seed,
+        "backend": backend,
+        "text_cfg": text_cfg,
+        "negative_prompt": negative_prompt or None,
+        "model": str(model),
+        "text_bundle": str(text_bundle),
+        "mixamo_model": mixamo_model,
+        "keyposes": keyposes,
+    })
 
     if not KMD_GENERATE.exists():
         raise RuntimeError(
@@ -522,7 +541,16 @@ def run_generation(params: dict) -> dict:
             negative_prompt_file.write_text(negative_prompt, encoding="utf-8")
             gen_cmd.append(str(negative_prompt_file))
 
+    inference_started = time.monotonic()
+    diagnostic.event("inference_started", command=gen_cmd, output_directory=str(out_dir))
     gen_proc = run_cancelable(gen_cmd, env=env, cwd=str(REPO_ROOT))
+    diagnostic.event(
+        "inference_finished",
+        elapsed_seconds=round(time.monotonic() - inference_started, 3),
+        returncode=gen_proc.returncode,
+        stdout=gen_proc.stdout,
+        stderr=gen_proc.stderr,
+    )
     if gen_proc.returncode != 0:
         with current_process_lock:
             was_cancelled = cancel_requested
@@ -542,8 +570,18 @@ def run_generation(params: dict) -> dict:
         "--motion-dir", str(out_dir), "--output", str(glb_path),
         "--mixamo-bind", resolve_mixamo_bind_arg(mixamo_model, mixamo_models),
     ]
+    export_started = time.monotonic()
+    diagnostic.event("export_started", command=export_cmd)
     export_proc = subprocess.run(export_cmd, cwd=str(REPO_ROOT),
                                   capture_output=True, text=True, timeout=300)
+    diagnostic.event(
+        "export_finished",
+        elapsed_seconds=round(time.monotonic() - export_started, 3),
+        returncode=export_proc.returncode,
+        stdout=export_proc.stdout,
+        stderr=export_proc.stderr,
+        glb_exists=glb_path.exists(),
+    )
     if export_proc.returncode != 0 or not glb_path.exists():
         raise RuntimeError(
             "export_glb.py 실패 (exit %d)\n%s" % (
@@ -575,6 +613,34 @@ def run_generation(params: dict) -> dict:
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
+
+
+def run_generation(params: dict) -> dict:
+    diagnostic = DiagnosticRun("motion", {"params": params})
+    started = time.monotonic()
+    try:
+        result = _run_generation(params, diagnostic)
+        diagnostic.event("completed", elapsed_seconds=round(time.monotonic() - started, 3), meta=result)
+        return result
+    except Exception as exc:
+        diagnostic.event(
+            "failed",
+            elapsed_seconds=round(time.monotonic() - started, 3),
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        raise
+
+
+class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
+    """Refuse a second WebUI daemon on the same Windows port."""
+
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -642,8 +708,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(KEYPOSE_STORE.state())
             elif path == "/api/pose-agent/state":
                 self._send_json(POSE_AGENT.state())
-            elif path == "/api/keypose-presets":
-                self._send_json({"items": load_keypose_presets()})
+            elif path in ("/api/poses", "/api/keypose-presets"):
+                self._send_json({"items": load_saved_poses()})
             elif path == "/api/tpose":
                 models = list_mixamo_models()
                 query = parse_qs(urlsplit(self.path).query)
@@ -714,39 +780,41 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "invalid keypose document"}, 400)
             return
 
-        if path == "/api/keypose-presets":
+        if path in ("/api/poses", "/api/keypose-presets"):
             try:
                 body = self._read_json_body()
                 requested = body.get("pose", body)
                 name = (requested.get("name") or "").strip()
-                existing = next((item for item in load_keypose_presets() if item.get("name") == name), None)
+                existing = next((item for item in load_saved_poses() if item.get("name") == name), None)
                 candidate = {
                     "schema_version": requested.get("schema_version", 1),
                     "id": requested.get("id") or (existing or {}).get("id") or str(uuid.uuid4()),
                     "name": name,
                     "controls": requested.get("controls"),
+                    "revision": requested.get("revision", 0),
+                    "edits": requested.get("edits", []),
                 }
                 validated = validate_pose_asset(candidate)
-                items = [item for item in load_keypose_presets() if item.get("id") != validated["id"] and item.get("name") != name]
+                items = [item for item in load_saved_poses() if item.get("id") != validated["id"] and item.get("name") != name]
                 items.append(validated)
                 items.sort(key=lambda item: item["name"])
-                save_keypose_presets(items)
+                save_saved_poses(items)
                 self._send_json({"items": items})
             except KeyposeValidationError as exc:
                 self._send_json({"error": str(exc)}, 400)
             except Exception:
-                self._send_json({"error": "invalid keypose preset"}, 400)
+                self._send_json({"error": "invalid pose"}, 400)
             return
 
-        if path == "/api/keypose-presets/delete":
+        if path in ("/api/poses/delete", "/api/keypose-presets/delete"):
             try:
                 body = self._read_json_body()
                 name = (body.get("name") or "").strip()
-                items = [item for item in load_keypose_presets() if item.get("name") != name]
-                save_keypose_presets(items)
+                items = [item for item in load_saved_poses() if item.get("name") != name]
+                save_saved_poses(items)
                 self._send_json({"items": items})
             except Exception:
-                self._send_json({"error": "invalid keypose preset request"}, 400)
+                self._send_json({"error": "invalid pose request"}, 400)
             return
 
         if path == "/api/cancel":
@@ -860,13 +928,20 @@ def main():
 
     GENERATIONS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_default_tpose_preview()
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    try:
+        POSE_CLI_RUNTIME.start()
+        print("포즈 LLM 서브 에이전트: 대기 중")
+    except Exception as exc:
+        print(f"포즈 LLM 서브 에이전트 시작 실패: {exc}")
+    server = ExclusiveThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}/"
     print(f"kimodo-motion 웹 UI: {url}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        POSE_CLI_RUNTIME.stop()
 
 
 if __name__ == "__main__":

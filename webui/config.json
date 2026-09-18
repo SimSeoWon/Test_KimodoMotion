@@ -1,0 +1,7 @@
+{
+  "pose_agent": {
+    "total_timeout_seconds": 300,
+    "idle_timeout_seconds": 45,
+    "max_attempts": 1
+  }
+}

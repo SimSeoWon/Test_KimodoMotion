@@ -173,19 +173,6 @@
       <span class="context-badge">애니메이션 창의 미리보기 캐릭터 사용</span>
     </div>
     <div id="posing-panel" class="posing-panel">
-      <section class="pose-agent-panel" aria-labelledby="pose-agent-title">
-        <div>
-          <h3 id="pose-agent-title">AI 포즈 명령</h3>
-          <p>현재 화면의 자세를 기준으로 LLM 서브 에이전트가 포즈를 조절합니다.</p>
-        </div>
-        <div class="pose-agent-command">
-          <textarea id="pose-agent-instruction" rows="2" placeholder="예: 하체를 낮추고 마보 자세를 취해. 상체는 정면을 유지해."></textarea>
-          <button type="button" id="pose-agent-submit">포즈 조절</button>
-        </div>
-        <p id="pose-agent-status" class="hint" role="status">명령을 입력하면 현재 포즈 스냅샷과 함께 WebUI 데몬으로 전달됩니다.</p>
-        <div class="pose-agent-history-heading">이 포즈에 저장된 AI 요청</div>
-        <div id="pose-agent-history" class="pose-agent-history" aria-label="포즈에 저장된 AI 요청 목록"></div>
-      </section>
       <div class="posing-tools">
         <button type="button" data-pose-mode="select" class="active" title="선택 (Q)">선택</button>
         <button type="button" data-pose-mode="translate" title="이동 (W)">이동</button>
@@ -194,11 +181,16 @@
         <button type="button" id="pose-reset">새 포즈 / 초기화</button>
       </div>
       <div id="pose-canvas" class="pose-canvas"></div>
-      <div class="pose-selection-row">
+      <div class="pose-selection-row pose-draft-row" aria-label="현재 작업 포즈">
         <span>선택: <b id="pose-selection">없음</b></span>
         <input id="pose-label" type="text" maxlength="80" placeholder="포즈 이름 (예: 낮은 마보 자세)">
+        <textarea id="pose-agent-instruction" rows="1" placeholder="이 포즈에서 바꿀 내용 (예: 오른손만 조금 더 올려)"></textarea>
+        <button type="button" id="pose-agent-submit">포즈 조절</button>
         <button type="button" id="pose-preset-save">이 포즈 저장</button>
       </div>
+      <p id="pose-agent-status" class="hint pose-agent-status" role="status">현재 작업 포즈를 기준으로 명령한 부분만 수정합니다.</p>
+      <div class="pose-agent-history-heading">이 포즈의 AI 수정 이력</div>
+      <div id="pose-agent-history" class="pose-agent-history" aria-label="현재 포즈의 AI 수정 이력"></div>
       <div class="pose-preset-row">
         <select id="pose-preset"><option value="">저장된 포즈 불러오기...</option></select>
         <button type="button" id="pose-preset-load">불러오기</button>

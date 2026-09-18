@@ -20,7 +20,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/2] 실행 가능한 상태인지 점검 중...
+echo [1/3] 이전에 떠 있는 서버가 있으면 정리 중...
+echo   (창을 안 닫고 다시 실행하면 서버가 중복으로 켜져서 요청이 불안정해집니다)
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*webui\server.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+echo.
+
+echo [2/3] 실행 가능한 상태인지 점검 중...
 echo.
 py webui\server.py --check
 if errorlevel 1 (
@@ -34,12 +39,12 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/2] 서버를 백그라운드 창으로 띄우고 브라우저를 엽니다...
+echo [3/3] 서버를 백그라운드 창으로 띄우고 브라우저를 엽니다...
 echo   (이 창은 닫아도 됩니다 - 서버는 별도 창에서 계속 실행됩니다)
 echo   서버를 완전히 끄려면, 새로 뜬 "kimodo-motion webui" 창을 닫으세요.
 echo.
 
-start "kimodo-motion webui" /min py webui\server.py
+start "kimodo-motion webui" cmd /k py webui\server.py
 
 REM 서버가 뜰 시간을 잠깐 준 뒤 브라우저를 연다 (ping을 타이머 대용으로 씀 - 콘솔 없이도 동작).
 ping -n 3 127.0.0.1 >nul

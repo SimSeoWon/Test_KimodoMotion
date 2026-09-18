@@ -107,8 +107,8 @@ Claude Code는 저장소의 `.mcp.json`을 승인하면 `kimodo-keypose` 도구�
 py scripts\keypose_mcp.py
 ```
 
-MCP 도구로 현재 포즈 조회, 키포즈 생성·복사·삭제, 13개 컨트롤 이동/회전, 포즈 프리셋
-저장·타임라인 배치, undo/redo를
+MCP 도구로 현재 포즈 조회, 키포즈 생성·복사·삭제, 13개 컨트롤 이동/회전, 포즈 저장·불러오기와
+타임라인 배치, undo/redo를
 수행할 수 있다. AI나 HTTP API의 변경은 실행 중인 포징 UI에 자동 반영되며, 웹에서 만든
 키포즈와 같은 `webui/keypose.py` schema 및 검증기를 공유한다.
 

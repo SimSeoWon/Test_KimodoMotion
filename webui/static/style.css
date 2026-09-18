@@ -425,31 +425,21 @@ details.advanced .field { margin-top: 8px; }
   border-radius: 8px;
   background: #0d1117;
 }
-.pose-agent-panel {
-  margin-bottom: 10px;
-  padding: 10px;
-  border: 1px solid #354763;
-  border-radius: 7px;
-  background: #151d29;
+.pose-draft-row { padding: 8px; border: 1px solid #354763; border-radius: 7px; background: #151d29; }
+.pose-draft-row > span { white-space: nowrap; }
+.pose-draft-row #pose-label { flex: 1 1 180px; }
+.pose-draft-row #pose-agent-instruction {
+  flex: 2 1 320px;
+  min-height: 32px;
+  height: 32px;
+  margin: 0;
+  resize: vertical;
 }
-.pose-agent-panel h3 { margin: 0 0 3px; font-size: 14px; }
-.pose-agent-panel p { margin: 0 0 8px; color: var(--text-dim); font-size: 12px; }
-.pose-agent-command { display: flex; align-items: stretch; gap: 8px; }
-.pose-agent-command textarea { flex: 1; margin: 0; min-height: 58px; }
-.pose-agent-command button {
-  min-width: 100px;
-  border: 0;
-  border-radius: 6px;
-  padding: 8px 12px;
-  color: #0d1117;
-  background: var(--accent);
-  font-weight: 700;
-  cursor: pointer;
-}
-.pose-agent-command button:disabled { color: var(--text-dim); background: var(--border); cursor: wait; }
-.pose-agent-panel #pose-agent-status { margin-top: 8px; margin-bottom: 0; }
-.pose-agent-history { display: grid; gap: 5px; margin-top: 8px; }
-.pose-agent-history-heading { margin-top: 10px; color: var(--text-dim); font-size: 11px; font-weight: 700; }
+.pose-draft-row #pose-agent-submit { color: #0d1117; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+.pose-draft-row #pose-agent-submit:disabled { color: var(--text-dim); background: var(--border); cursor: wait; }
+.pose-agent-status { margin: -2px 8px 0; }
+.pose-agent-history { display: grid; gap: 5px; margin: 5px 8px 8px; }
+.pose-agent-history-heading { margin: 8px 8px 0; color: var(--text-dim); font-size: 11px; font-weight: 700; }
 .pose-agent-edit {
   padding: 6px 8px;
   border-left: 2px solid var(--accent);

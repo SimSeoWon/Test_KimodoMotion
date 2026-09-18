@@ -41,3 +41,4 @@ webui/_caption_tmp/
 webui/keypose_agent_state.json
 webui/pose_agent_state.json
 webui/keypose_presets.json
+webui/logs/

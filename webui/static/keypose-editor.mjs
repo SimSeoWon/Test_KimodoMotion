@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
-import { solveTwoBonePositions, solveTwoBoneWithJointHint } from "./keypose-fk.mjs";
+import { solveTwoBoneWithJointHint } from "./keypose-fk.mjs";
 
 const $ = (id) => document.getElementById(id);
 const markerColor = 0x4fd18b;
@@ -16,17 +16,6 @@ const IK_DEPTH = {
 };
 const HINGE_CONTROLS = new Set(["left_elbow", "right_elbow", "left_knee", "right_knee"]);
 const TWO_BONE_EFFECTORS = new Set(["left_foot", "right_foot"]);
-const HUMAN_LIMITS = Object.freeze({
-  hipFlexion: THREE.MathUtils.degToRad(120),
-  hipExtension: THREE.MathUtils.degToRad(15),
-  hipAbduction: THREE.MathUtils.degToRad(35),
-  hipAdduction: THREE.MathUtils.degToRad(15),
-  kneeFlexion: THREE.MathUtils.degToRad(135),
-  ankleDorsiflexion: THREE.MathUtils.degToRad(20),
-  anklePlantarflexion: THREE.MathUtils.degToRad(50),
-  ankleSideTilt: THREE.MathUtils.degToRad(15),
-});
-
 function quaternionArray(quaternion) {
   return [quaternion.x, quaternion.y, quaternion.z, quaternion.w];
 }
@@ -61,12 +50,12 @@ export async function createKeyposeEditor(options) {
   const selectionLabel = $("pose-selection");
   const labelInput = $("pose-label");
   const controlList = $("pose-controls");
-  const presetSelect = $("pose-preset");
+  const savedPoseSelect = $("pose-preset");
   const agentInstruction = $("pose-agent-instruction");
   const agentSubmit = $("pose-agent-submit");
   const agentStatus = $("pose-agent-status");
   const agentHistory = $("pose-agent-history");
-  let posePresets = [];
+  let savedPoses = [];
   let agentRevision = -1;
   let currentPoseRecord = {id: crypto.randomUUID(), revision: 0, edits: []};
 
@@ -213,6 +202,42 @@ export async function createKeyposeEditor(options) {
     });
   }
 
+  // SOMA30 has no heel joint -- LeftFoot/RightFoot (the ankle) represents the whole
+  // heel-through-midfoot segment as one rigid unit. Without an explicit reference for
+  // where the heel actually sits, nothing kept it off the ground: an ankle rotation
+  // that satisfied a foot/toe position target could still swing the untracked heel,
+  // trailing behind the ankle pivot, below the floor (reported 2026-09-18/19). This
+  // derives a fixed heel point per foot from the bind pose -- ankle's X, toe's ground
+  // height, mirrored the same distance behind the ankle that the toe sits in front of
+  // it -- stored in the ankle bone's own local space so it travels rigidly under FK.
+  const heelOffsets = new Map();
+  for (const [footId, footJoint, toeJoint] of [
+    ["left_foot", "LeftFoot", "LeftToeBase"],
+    ["right_foot", "RightFoot", "RightToeBase"],
+  ]) {
+    const footBone = bones.get(footJoint);
+    const toeBone = bones.get(toeJoint);
+    if (!footBone || !toeBone) continue;
+    const ankleWorld = new THREE.Vector3();
+    const toeWorld = new THREE.Vector3();
+    footBone.getWorldPosition(ankleWorld);
+    toeBone.getWorldPosition(toeWorld);
+    const heelWorld = new THREE.Vector3(
+      ankleWorld.x, toeWorld.y, ankleWorld.z - (toeWorld.z - ankleWorld.z),
+    );
+    heelOffsets.set(footId, footBone.worldToLocal(heelWorld));
+  }
+  const heelMarkers = new Map();
+  for (const footId of heelOffsets.keys()) {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.018, 10, 8),
+      new THREE.MeshBasicMaterial({color: 0xff6b6b, depthTest: false}),
+    );
+    marker.renderOrder = 10;
+    scene.add(marker);
+    heelMarkers.set(footId, marker);
+  }
+
   for (const definition of schema.controls) {
     const bone = bones.get(definition.soma_joint);
     if (!bone) continue;
@@ -311,42 +336,6 @@ export async function createKeyposeEditor(options) {
     bone.updateMatrixWorld(true);
   }
 
-  function clampHipDirection(hip, desiredKnee, isLeft, upperLength) {
-    const up = new THREE.Vector3(0, 1, 0).transformDirection(modelRoot.matrixWorld);
-    const forward = new THREE.Vector3(0, 0, 1).transformDirection(modelRoot.matrixWorld);
-    const right = new THREE.Vector3(1, 0, 0).transformDirection(modelRoot.matrixWorld);
-    const direction = desiredKnee.clone().sub(hip).normalize();
-    const downAmount = -direction.dot(up);
-    const flexion = THREE.MathUtils.clamp(
-      Math.atan2(direction.dot(forward), downAmount),
-      -HUMAN_LIMITS.hipExtension, HUMAN_LIMITS.hipFlexion,
-    );
-    const sideSign = isLeft ? 1 : -1;
-    const abduction = THREE.MathUtils.clamp(
-      Math.atan2(sideSign * direction.dot(right), downAmount),
-      -HUMAN_LIMITS.hipAdduction, HUMAN_LIMITS.hipAbduction,
-    );
-    const limited = up.clone().negate();
-    limited.applyAxisAngle(right, -flexion);
-    limited.applyAxisAngle(forward, sideSign * abduction);
-    return hip.clone().add(limited.normalize().multiplyScalar(upperLength));
-  }
-
-  function clampAnkleLocalRotation(definition, bone) {
-    if (definition.id !== "left_foot" && definition.id !== "right_foot") return;
-    const rest = restState[bone.name];
-    if (!rest) return;
-    const restRotation = new THREE.Quaternion().fromArray(rest.rotation_xyzw);
-    const relative = restRotation.clone().invert().multiply(bone.quaternion);
-    const angles = new THREE.Euler().setFromQuaternion(relative, "XYZ");
-    angles.x = THREE.MathUtils.clamp(
-      angles.x, -HUMAN_LIMITS.anklePlantarflexion, HUMAN_LIMITS.ankleDorsiflexion,
-    );
-    angles.y = THREE.MathUtils.clamp(angles.y, -HUMAN_LIMITS.ankleSideTilt, HUMAN_LIMITS.ankleSideTilt);
-    angles.z = THREE.MathUtils.clamp(angles.z, -HUMAN_LIMITS.ankleSideTilt, HUMAN_LIMITS.ankleSideTilt);
-    bone.quaternion.copy(restRotation.multiply(new THREE.Quaternion().setFromEuler(angles))).normalize();
-  }
-
   function solveTwoBoneLeg(effector, target, poleTarget = null) {
     const lower = effector.parent;
     const upper = lower?.parent;
@@ -374,11 +363,9 @@ export async function createKeyposeEditor(options) {
     const jointHint = poleTarget || knee.clone();
     const solved = solveTwoBoneWithJointHint(
       vectorArray(hip), vectorArray(target.position), vectorArray(jointHint), vectorArray(pole),
-      upperLength, lowerLength, HUMAN_LIMITS.kneeFlexion,
+      upperLength, lowerLength, Math.PI,
     );
-    const desiredKnee = clampHipDirection(
-      hip, new THREE.Vector3().fromArray(solved.joint), effector.name.toLowerCase().includes("left"), upperLength,
-    );
+    const desiredKnee = new THREE.Vector3().fromArray(solved.joint);
     const reachableTarget = new THREE.Vector3().fromArray(solved.end);
 
     rotateBoneToward(upper, knee.clone().sub(hip), desiredKnee.clone().sub(hip));
@@ -432,7 +419,7 @@ export async function createKeyposeEditor(options) {
     constrained.clear();
     currentPoseRecord = {id: crypto.randomUUID(), revision: 0, edits: []};
     labelInput.value = "";
-    presetSelect.value = "";
+    savedPoseSelect.value = "";
     renderAgentHistory();
     status.textContent = "새 빈 포즈를 만들고 기본 자세로 초기화했습니다.";
   });
@@ -507,7 +494,6 @@ export async function createKeyposeEditor(options) {
         bone.parent.getWorldQuaternion(parentRotation);
         bone.quaternion.copy(parentRotation.invert().multiply(worldRotation));
       } else bone.quaternion.copy(worldRotation);
-      clampAnkleLocalRotation(definition, bone);
       const flags = constrained.get(definition.id) || {position: false, rotation: false};
       flags.rotation = true;
       constrained.set(definition.id, flags);
@@ -550,15 +536,6 @@ export async function createKeyposeEditor(options) {
       const flags = constrained.get(definition.id) || {position: false, rotation: false};
       flags.position = true;
       constrained.set(definition.id, flags);
-    }
-    modelRoot.updateMatrixWorld(true);
-
-    // Toe IK may rotate the foot after the ankle target has been solved. Clamp
-    // that final local ankle rotation before restoring optional orientations.
-    for (const definition of schema.controls) {
-      if (definition.id !== "left_foot" && definition.id !== "right_foot") continue;
-      const bone = bones.get(definition.soma_joint);
-      if (bone) clampAnkleLocalRotation(definition, bone);
     }
     modelRoot.updateMatrixWorld(true);
 
@@ -635,18 +612,18 @@ export async function createKeyposeEditor(options) {
     }
   });
 
-  async function loadPosePresets() {
-    const response = await fetch("/api/keypose-presets");
+  async function loadSavedPoses() {
+    const response = await fetch("/api/poses");
     const data = await response.json();
-    posePresets = data.items || [];
-    presetSelect.innerHTML = '<option value="">포즈 프리셋...</option>';
-    for (const preset of posePresets) {
+    savedPoses = data.items || [];
+    savedPoseSelect.innerHTML = '<option value="">저장된 포즈 선택...</option>';
+    for (const pose of savedPoses) {
       const option = document.createElement("option");
-      option.value = preset.name;
-      option.textContent = preset.name;
-      presetSelect.appendChild(option);
+      option.value = pose.name;
+      option.textContent = pose.name;
+      savedPoseSelect.appendChild(option);
     }
-    options.onPresetsChanged?.(posePresets);
+    options.onPresetsChanged?.(savedPoses);
   }
 
   $("pose-preset-save").addEventListener("click", async () => {
@@ -657,7 +634,7 @@ export async function createKeyposeEditor(options) {
     }
     const name = keypose.label.trim() || window.prompt("포즈 이름:", "새 포즈");
     if (!name) return;
-    const response = await fetch("/api/keypose-presets", {
+    const response = await fetch("/api/poses", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({pose: {
         schema_version: schema.schema_version,
@@ -669,31 +646,31 @@ export async function createKeyposeEditor(options) {
       }}),
     });
     const data = await response.json();
-    if (!response.ok) { status.textContent = data.error || "프리셋 저장 실패"; return; }
-    await loadPosePresets();
-    presetSelect.value = name;
-    status.textContent = `포즈 프리셋 '${name}'을 저장했습니다.`;
+    if (!response.ok) { status.textContent = data.error || "포즈 저장 실패"; return; }
+    await loadSavedPoses();
+    savedPoseSelect.value = name;
+    status.textContent = `포즈 '${name}'을 저장했습니다.`;
   });
 
   $("pose-preset-load").addEventListener("click", () => {
-    const preset = posePresets.find((item) => item.name === presetSelect.value);
-    if (!preset) return;
-    const keypose = {label: preset.name, controls: structuredClone(preset.controls)};
-    currentPoseRecord = structuredClone(preset);
+    const pose = savedPoses.find((item) => item.name === savedPoseSelect.value);
+    if (!pose) return;
+    const keypose = {label: pose.name, controls: structuredClone(pose.controls)};
+    currentPoseRecord = structuredClone(pose);
     renderAgentHistory();
-    labelInput.value = preset.name;
+    labelInput.value = pose.name;
     applyKeypose(keypose);
-    status.textContent = `'${preset.name}' 포즈를 불러왔습니다.`;
+    status.textContent = `'${pose.name}' 포즈를 불러왔습니다. 이 포즈를 기준으로 필요한 부분만 수정합니다.`;
   });
 
   $("pose-preset-delete").addEventListener("click", async () => {
-    const name = presetSelect.value;
+    const name = savedPoseSelect.value;
     if (!name) return;
-    const deletingCurrent = posePresets.some((item) => item.name === name && item.id === currentPoseRecord.id);
-    await fetch("/api/keypose-presets/delete", {
+    const deletingCurrent = savedPoses.some((item) => item.name === name && item.id === currentPoseRecord.id);
+    await fetch("/api/poses/delete", {
       method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name}),
     });
-    await loadPosePresets();
+    await loadSavedPoses();
     if (deletingCurrent) {
       restoreBoneState(bones, restState);
       constrained.clear();
@@ -701,10 +678,10 @@ export async function createKeyposeEditor(options) {
       labelInput.value = "";
       renderAgentHistory();
       status.textContent = `포즈 '${name}'을 삭제하고 새 빈 포즈로 전환했습니다.`;
-    } else status.textContent = `포즈 프리셋 '${name}'을 삭제했습니다.`;
+    } else status.textContent = `포즈 '${name}'을 삭제했습니다.`;
   });
 
-  await loadPosePresets();
+  await loadSavedPoses();
   await pullPoseAgentState();
   setInterval(pullPoseAgentState, 750);
 
@@ -777,6 +754,11 @@ export async function createKeyposeEditor(options) {
       const bone = bones.get(definition.soma_joint);
       if (marker && bone) bone.getWorldPosition(marker.position);
     }
+    for (const [footId, offset] of heelOffsets) {
+      const marker = heelMarkers.get(footId);
+      const bone = bones.get(footId === "left_foot" ? "LeftFoot" : "RightFoot");
+      if (marker && bone) marker.position.copy(offset).applyMatrix4(bone.matrixWorld);
+    }
     renderer.render(scene, camera);
   }
   animate();
@@ -787,7 +769,7 @@ export async function createKeyposeEditor(options) {
       const {bone_state: ignored, ...pose} = makePose();
       return pose;
     },
-    reloadPresets: loadPosePresets,
+    reloadPresets: loadSavedPoses,
     selectControl,
     setMode,
   };

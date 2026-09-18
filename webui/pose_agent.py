@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import threading
+import time
+import traceback
 import uuid
+from collections import deque
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,11 +19,19 @@ from typing import Callable
 
 try:
     from keypose import CONTROLS, SCHEMA_VERSION, KeyposeValidationError, validate_pose_asset
+    from diagnostic_log import DiagnosticRun
 except ModuleNotFoundError:
     from webui.keypose import CONTROLS, SCHEMA_VERSION, KeyposeValidationError, validate_pose_asset
+    from webui.diagnostic_log import DiagnosticRun
 
 
 CONTROL_IDS = tuple(item["id"] for item in CONTROLS)
+CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
+DEFAULT_POSE_AGENT_CONFIG = {
+    "total_timeout_seconds": 300,
+    "idle_timeout_seconds": 45,
+    "max_attempts": 1,
+}
 POSITION_CONTROL_IDS = {"pelvis", "left_hand", "right_hand", "left_elbow", "right_elbow", "left_knee", "right_knee", "left_foot", "right_foot", "left_toe", "right_toe"}
 POSITION_ONLY_CONTROL_IDS = {"left_elbow", "right_elbow", "left_knee", "right_knee"}
 ROTATION_PROPERTIES = {
@@ -75,140 +87,28 @@ POSE_RESULT_SCHEMA = {
 }
 
 
-_HIP_TO_FOOT = {"left_hip": "left_foot", "right_hip": "right_foot"}
-
-
-def drop_redundant_hip_rotation(result: dict) -> dict:
-    """Strip an LLM-guessed hip rotation whenever that leg also has a foot target.
-
-    The two-bone leg IK re-aims the hip/knee toward the foot position regardless
-    of any hip rotation given here (it only rotates ancestors to hit the position
-    target) -- but it does so as a minimal rotation FROM whatever orientation the
-    hip already has, so a given rotation only contributes twist, never influences
-    where the ankle ends up. An LLM guess is often anatomically confused (a pure
-    yaw/internal-rotation twist instead of an abduction swing), and that twist
-    then survives the re-aim as a pigeon-toed-looking leg -- for both the "마보"
-    recipe and any other instruction (e.g. a plain "조금 더 낮게" follow-up) that
-    sets a foot position. Dropping it lets the IK re-derive the hip cleanly from
-    rest instead. A hip rotation with no matching foot position is meaningful
-    (e.g. a pure stance turn with the foot left alone) and is kept as-is.
-    """
-    controls = dict(result.get("controls") or {})
-    changed = False
-    for hip_id, foot_id in _HIP_TO_FOOT.items():
-        if hip_id in controls and controls.get(foot_id, {}).get("position"):
-            controls.pop(hip_id, None)
-            changed = True
-    return {**result, "controls": controls} if changed else result
-
-
-def apply_pose_recipe(instruction: str, result: dict, snapshot: dict) -> dict:
-    """Apply deterministic anatomical constraints for named poses."""
-    lowered = instruction.casefold()
-    if "마보" not in lowered and "horse stance" not in lowered:
-        return result
+def load_pose_agent_config() -> dict:
+    """Read bounded timeout settings for every request, without a server restart."""
+    config = dict(DEFAULT_POSE_AGENT_CONFIG)
     try:
-        pelvis = snapshot["pelvis"]["position"]
-        rest_pelvis = snapshot["pelvis"].get("rest_position", pelvis)
-        left_foot_state = snapshot["left_foot"]
-        right_foot_state = snapshot["right_foot"]
-        left_foot = left_foot_state["position"]
-        right_foot = right_foot_state["position"]
-        rest_left_foot = left_foot_state.get("rest_position", left_foot)
-        rest_right_foot = right_foot_state.get("rest_position", right_foot)
-        left_toe_state = snapshot["left_toe"]
-        right_toe_state = snapshot["right_toe"]
-        rest_left_toe = left_toe_state.get("rest_position", left_toe_state["position"])
-        rest_right_toe = right_toe_state.get("rest_position", right_toe_state["position"])
-        rest_left_knee = snapshot["left_knee"].get("rest_position", snapshot["left_knee"]["position"])
-        rest_right_knee = snapshot["right_knee"].get("rest_position", snapshot["right_knee"]["position"])
-        rest_left_hip = snapshot["left_hip"].get("rest_position", snapshot["left_hip"]["position"])
-        rest_right_hip = snapshot["right_hip"].get("rest_position", snapshot["right_hip"]["position"])
-        def distance(a, b):
-            return sum((a[index] - b[index]) ** 2 for index in range(3)) ** 0.5
-        leg_length = max(
-            distance(rest_pelvis, rest_left_knee) + distance(rest_left_knee, rest_left_foot),
-            distance(rest_pelvis, rest_right_knee) + distance(rest_right_knee, rest_right_foot),
-        )
-        if leg_length < 1e-4:
-            return result
-        ground_y = (rest_left_foot[1] + rest_right_foot[1]) * 0.5
-        pelvis_x = rest_pelvis[0]
-        current_half_width = abs(rest_left_foot[0] - rest_right_foot[0]) * 0.5
-        half_width = max(current_half_width, leg_length * 0.38)
-        target_pelvis_y = max(
-            ground_y + leg_length * 0.68,
-            rest_pelvis[1] - leg_length * 0.20,
-        )
-        left_sign = 1.0 if rest_left_foot[0] >= rest_right_foot[0] else -1.0
-        controls = dict(result.get("controls") or {})
-        controls["pelvis"] = {
-            "position": [pelvis_x, target_pelvis_y, rest_pelvis[2]],
-            "space": "world", "weight": 1.0,
-        }
-        left_foot_target = [pelvis_x + left_sign * half_width, rest_left_foot[1], rest_left_foot[2]]
-        right_foot_target = [pelvis_x - left_sign * half_width, rest_right_foot[1], rest_right_foot[2]]
-        rest_left_foot_rot = left_foot_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
-        rest_right_foot_rot = right_foot_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
-        rest_left_toe_rot = left_toe_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
-        rest_right_toe_rot = right_toe_state.get("rest_rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
-        # The leg IK only rotates the hip/knee to aim the ankle; the ankle bone's own
-        # local rotation is left untouched, so it silently inherits whatever twist the
-        # knee bend picked up (pigeon-toed feet) unless a rotation target is given here
-        # to trigger the editor's separate end-effector-orientation pass.
-        controls["left_foot"] = {
-            "position": left_foot_target, "rotation_xyzw": rest_left_foot_rot,
-            "space": "world", "weight": 1.0,
-        }
-        controls["right_foot"] = {
-            "position": right_foot_target, "rotation_xyzw": rest_right_foot_rot,
-            "space": "world", "weight": 1.0,
-        }
-        controls["left_toe"] = {
-            "position": [rest_left_toe[0] + left_foot_target[0] - rest_left_foot[0], rest_left_toe[1], rest_left_toe[2]],
-            "rotation_xyzw": rest_left_toe_rot,
-            "space": "world", "weight": 1.0,
-        }
-        controls["right_toe"] = {
-            "position": [rest_right_toe[0] + right_foot_target[0] - rest_right_foot[0], rest_right_toe[1], rest_right_toe[2]],
-            "rotation_xyzw": rest_right_toe_rot,
-            "space": "world", "weight": 1.0,
-        }
-        # A knee position is a bend-plane hint for the two-bone leg IK, not a hard
-        # target. Track it toward the (now wide) ankle, at mid-height, and directly
-        # above the hip in Z (no forward lean) so the leg spreads sideways instead of
-        # jutting forward. Hip rotation is left to the IK entirely: it re-aims
-        # whatever orientation the hip already has toward this knee hint regardless
-        # of any rotation given here, but preserves twist around that aim axis while
-        # doing so, and an LLM-guessed hip rotation is often anatomically confused
-        # (e.g. a pure yaw/internal-rotation twist instead of abduction) — that
-        # twist would otherwise survive the re-aim as a pigeon-toed-looking leg.
-        left_hip_now = [rest_left_hip[0], rest_left_hip[1] + (target_pelvis_y - rest_pelvis[1]), rest_left_hip[2]]
-        right_hip_now = [rest_right_hip[0], rest_right_hip[1] + (target_pelvis_y - rest_pelvis[1]), rest_right_hip[2]]
-        controls["left_knee"] = {
-            "position": [
-                left_hip_now[0] + 0.8 * (left_foot_target[0] - left_hip_now[0]),
-                (left_hip_now[1] + left_foot_target[1]) / 2, left_hip_now[2],
-            ],
-            "space": "world", "weight": 1.0,
-        }
-        controls["right_knee"] = {
-            "position": [
-                right_hip_now[0] + 0.8 * (right_foot_target[0] - right_hip_now[0]),
-                (right_hip_now[1] + right_foot_target[1]) / 2, right_hip_now[2],
-            ],
-            "space": "world", "weight": 1.0,
-        }
-        controls.pop("left_hip", None)
-        controls.pop("right_hip", None)
-        return {
-            **result,
-            "name": result.get("name") or "마보 자세",
-            "summary": f"{result.get('summary', '').strip()} · rest 기준 마보 보정(발 간격 {half_width * 2:.2f}m, 골반 하강 {rest_pelvis[1] - target_pelvis_y:.2f}m)".strip(" ·"),
-            "controls": controls,
-        }
-    except (KeyError, TypeError, ValueError):
-        return result
+        payload = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        requested = payload.get("pose_agent", {}) if isinstance(payload, dict) else {}
+        if isinstance(requested, dict):
+            config.update({key: requested[key] for key in config if key in requested})
+    except (OSError, json.JSONDecodeError):
+        pass
+    bounds = {
+        "total_timeout_seconds": (30, 1800),
+        "idle_timeout_seconds": (5, 300),
+        "max_attempts": (1, 3),
+    }
+    for key, (minimum, maximum) in bounds.items():
+        value = config[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            config[key] = DEFAULT_POSE_AGENT_CONFIG[key]
+        else:
+            config[key] = int(max(minimum, min(maximum, value)))
+    return config
 
 
 def _extract_structured_output(raw: str) -> dict:
@@ -222,10 +122,207 @@ def _extract_structured_output(raw: str) -> dict:
     raise ValueError("LLM response did not contain structured pose output")
 
 
-def run_claude_pose_agent(instruction: str, pose: dict, snapshot: dict) -> dict:
-    executable = shutil.which("claude") or shutil.which("claude.exe")
-    if not executable:
-        raise RuntimeError("claude CLI를 찾을 수 없습니다.")
+def _run_pose_cli(command: list[str], cwd: Path, *, attempt_timeout: int = 50) -> subprocess.CompletedProcess:
+    """Run the authenticated CLI with one retry for a stalled API turn.
+
+    Claude CLI occasionally remains alive without producing a response even though
+    the next request succeeds immediately. A single 90-second wait made that
+    transient stall indistinguishable from a genuinely slow response. Two bounded
+    attempts recover from the common stall while keeping a finite total wait.
+    """
+    last_timeout = None
+    for _attempt in range(2):
+        try:
+            return subprocess.run(
+                command,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=attempt_timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_timeout = exc
+    raise RuntimeError(
+        f"포즈 LLM이 {attempt_timeout}초씩 두 번 응답하지 않았습니다. "
+        "Claude CLI 연결 상태를 확인한 뒤 다시 시도하세요."
+    ) from last_timeout
+
+
+class PoseCliRuntime:
+    """One long-lived Claude CLI process fed with stream-json user turns."""
+
+    def __init__(self):
+        self._process = None
+        self._events = queue.Queue()
+        self._lifecycle_lock = threading.Lock()
+        self._request_lock = threading.Lock()
+        self._event_log = deque(maxlen=30)
+        self._active_diagnostic = None
+
+    def start(self) -> None:
+        with self._lifecycle_lock:
+            if self._process is not None and self._process.poll() is None:
+                return
+            executable = shutil.which("claude") or shutil.which("claude.exe")
+            if not executable:
+                raise RuntimeError("claude CLI를 찾을 수 없습니다.")
+            command = [
+                executable, "--print",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--json-schema", json.dumps(POSE_RESULT_SCHEMA, separators=(",", ":")),
+                "--tools", "",
+                "--permission-mode", "dontAsk",
+                "--no-session-persistence",
+            ]
+            model = os.environ.get("KIMODO_POSE_AGENT_MODEL", "sonnet").strip()
+            if not model or "haiku" in model.casefold():
+                model = "sonnet"
+            if model:
+                command.extend(["--model", model])
+            self._events = queue.Queue()
+            self._process = subprocess.Popen(
+                command,
+                cwd=Path(__file__).resolve().parent.parent,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+            threading.Thread(target=self._read_events, args=(self._process,), daemon=True).start()
+            threading.Thread(target=self._read_stderr, args=(self._process,), daemon=True).start()
+
+    def _read_events(self, process) -> None:
+        try:
+            for line in process.stdout:
+                try:
+                    event = json.loads(line)
+                    summary = {
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "type": event.get("type", "unknown"),
+                        "subtype": event.get("subtype"),
+                        "attempt": event.get("attempt"),
+                        "max_retries": event.get("max_retries"),
+                    }
+                    self._event_log.append(summary)
+                    if self._active_diagnostic is not None:
+                        self._active_diagnostic.event("claude_event", payload=event)
+                except json.JSONDecodeError:
+                    self._event_log.append({
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "type": "invalid_json",
+                    })
+                self._events.put(line)
+        finally:
+            self._events.put(None)
+
+    def _read_stderr(self, process) -> None:
+        for line in process.stderr:
+            if self._active_diagnostic is not None:
+                self._active_diagnostic.event("claude_stderr", text=line.rstrip())
+
+    def stop(self) -> None:
+        with self._lifecycle_lock:
+            process = self._process
+            self._process = None
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+
+    def status(self) -> dict:
+        process = self._process
+        return {
+            "pid": process.pid if process is not None and process.poll() is None else None,
+            "running": process is not None and process.poll() is None,
+            "events": list(self._event_log),
+        }
+
+    def request(self, prompt: str, *, diagnostic: DiagnosticRun | None = None) -> dict:
+        with self._request_lock:
+            config = load_pose_agent_config()
+            self._active_diagnostic = diagnostic
+            started = time.monotonic()
+            if diagnostic is not None:
+                diagnostic.event("claude_timeout_config", **config)
+            for attempt in range(config["max_attempts"]):
+                self.start()
+                if diagnostic is not None:
+                    diagnostic.event("claude_attempt", attempt=attempt + 1, pid=self._process.pid)
+                message = {
+                    "type": "user",
+                    "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                }
+                try:
+                    self._process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+                    self._process.stdin.flush()
+                except (BrokenPipeError, OSError, AttributeError):
+                    self.stop()
+                    if attempt + 1 < config["max_attempts"]:
+                        continue
+                    self._active_diagnostic = None
+                    raise RuntimeError("대기 중인 포즈 LLM 프로세스에 명령을 전달하지 못했습니다.")
+                total_deadline = time.monotonic() + config["total_timeout_seconds"]
+                idle_deadline = time.monotonic() + config["idle_timeout_seconds"]
+                timeout_reason = "total"
+                while True:
+                    now = time.monotonic()
+                    deadline = min(total_deadline, idle_deadline)
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        timeout_reason = "total" if total_deadline <= idle_deadline else "idle"
+                        break
+                    try:
+                        line = self._events.get(timeout=remaining)
+                    except queue.Empty:
+                        timeout_reason = "total" if total_deadline <= idle_deadline else "idle"
+                        break
+                    if line is None:
+                        break
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    idle_deadline = time.monotonic() + config["idle_timeout_seconds"]
+                    if event.get("type") != "result":
+                        continue
+                    if event.get("is_error"):
+                        self._active_diagnostic = None
+                        raise RuntimeError(f"포즈 LLM 실행 실패: {event.get('result') or event.get('subtype') or 'unknown error'}")
+                    result = _extract_structured_output(json.dumps(event, ensure_ascii=False))
+                    if diagnostic is not None:
+                        diagnostic.event("claude_result", elapsed_seconds=round(time.monotonic() - started, 3), result=result)
+                    self._active_diagnostic = None
+                    return result
+                self.stop()
+                if diagnostic is not None:
+                    diagnostic.event(
+                        "claude_attempt_timeout",
+                        attempt=attempt + 1,
+                        reason=timeout_reason,
+                        total_timeout_seconds=config["total_timeout_seconds"],
+                        idle_timeout_seconds=config["idle_timeout_seconds"],
+                    )
+            self._active_diagnostic = None
+            raise RuntimeError(
+                f"포즈 LLM이 최대 {config['total_timeout_seconds']}초 안에 완료되지 않았거나 "
+                f"{config['idle_timeout_seconds']}초 동안 이벤트를 보내지 않았습니다."
+            )
+
+
+POSE_CLI_RUNTIME = PoseCliRuntime()
+
+
+def run_claude_pose_agent(instruction: str, pose: dict, snapshot: dict, *, diagnostic: DiagnosticRun | None = None) -> dict:
     llm_pose = {"name": pose.get("name", ""), "controls": pose.get("controls", {})}
     llm_snapshot = {
         control_id: {
@@ -238,8 +335,12 @@ def run_claude_pose_agent(instruction: str, pose: dict, snapshot: dict) -> dict:
 Return only data matching the supplied JSON schema. Never add unknown control names.
 The full snapshot contains current world-space transforms for reference. The current pose controls are the
 constraints already authored by the user. Preserve those constraints unless the instruction changes them,
-and return the complete desired constraint set. Prefer modest, anatomically plausible changes. Quaternion
-order is x,y,z,w. Do not change bone lengths. Keep feet near their current ground height unless asked.
+and return the complete desired constraint set. Apply the requested change at its stated magnitude instead
+of weakening it toward the current pose. Quaternion order is x,y,z,w. Do not change bone lengths.
+Never claim a distance, width multiplier, or angle in the summary unless the returned controls actually
+produce it. Before returning, calculate the requested measurement from the output numbers and compare it
+with the full snapshot. Preserve enough decimal precision for the requested change to be visible; merely
+rounding an unchanged snapshot coordinate is not a pose edit.
 The skeleton is a rooted FK tree: descendant world transforms are parent_world * local_transform.
 Never translate chest, head, shoulders, or hips. Use rotations for articulated joints. Positions on hands,
 elbows, knees, ankles, and toes are IK targets; the runtime will reach them by rotating ancestors.
@@ -249,6 +350,10 @@ explicitly asks to plant or pin that hand or foot in world space.
 LeftLeg/rightLeg are separate hip rotation controls. LeftFoot/rightFoot are ankle targets, while
 LeftToeBase/rightToeBase are separate ground-contact targets. Keep the matching toe at ground height and
 in front of the ankle. Do not impose a hard knee-versus-ankle position rule: solve joint angles instead.
+When the instruction turns a leg or foot inward/outward, keep the required hip/ankle rotation controls
+even when position targets are also present. Position and rotation express different requested properties.
+For a toe direction target, calculate its horizontal direction from toe minus ankle, preserve the current
+ankle-to-toe length, and verify that this vector has the requested yaw angle.
 There is no separate heel or sole joint — LeftFoot/RightFoot is the whole rear/mid-foot plate from ankle
 through heel, as one rigid unit; heel and sole are expressed through the ankle's own position and rotation,
 never through the toe. A heel lift / tiptoe / releve ("뒤꿈치를 들어", "까치발") means: raise the ankle's Y
@@ -256,11 +361,9 @@ position while keeping the matching toe's position near its current ground heigh
 pivot), and rotate the ankle toward plantarflexion so the foot line follows. Flattening the sole against
 the ground ("발바닥을 지면에 붙여", "평평하게") means: return the ankle's rotation toward its rest
 orientation and its Y position to the toe's ground height, so the whole plate lies flat — not a toe change.
-Use conservative human ranges: hip flexion 120°, extension 15°, abduction 35°, adduction 15°; knee
-flexion 0–135° with no hyperextension; ankle dorsiflexion 20°, plantarflexion 50°, side tilt ±15°.
 For a horse stance, spread the legs with the ankle positions. Knee positions are bend hints: keep each
 knee laterally near the hip-to-ankle line and bend forward without valgus collapse. The runtime solves
-each whole leg once and enforces joint-angle limits.
+each whole leg once.
 
 Instruction:
 {instruction}
@@ -271,36 +374,7 @@ Current pose asset:
 Full control snapshot:
 {json.dumps(llm_snapshot, ensure_ascii=False, separators=(',', ':'))}
 """
-    command = [
-        executable,
-        "--print",
-        "--output-format", "json",
-        "--json-schema", json.dumps(POSE_RESULT_SCHEMA, separators=(",", ":")),
-        "--tools", "",
-        "--permission-mode", "dontAsk",
-        "--no-session-persistence",
-    ]
-    model = os.environ.get("KIMODO_POSE_AGENT_MODEL", "haiku").strip()
-    if model:
-        command.extend(["--model", model])
-    command.append(prompt)
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=Path(__file__).resolve().parent.parent,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=90,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("포즈 LLM이 90초 안에 응답하지 않았습니다. 잠시 후 다시 시도하세요.") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit {completed.returncode}"
-        raise RuntimeError(f"포즈 LLM 실행 실패: {detail[-1000:]}")
-    return _extract_structured_output(completed.stdout)
+    return POSE_CLI_RUNTIME.request(prompt, diagnostic=diagnostic)
 
 
 class PoseAgentDaemon:
@@ -322,7 +396,7 @@ class PoseAgentDaemon:
 
     def state(self) -> dict:
         with self._lock:
-            return {"revision": self._revision, **deepcopy(self._state)}
+            return {"revision": self._revision, **deepcopy(self._state), "runtime": POSE_CLI_RUNTIME.status()}
 
     def submit(self, instruction: str, pose: dict, snapshot: dict) -> dict:
         instruction = instruction.strip() if isinstance(instruction, str) else ""
@@ -353,14 +427,28 @@ class PoseAgentDaemon:
         return self.state()
 
     def _run_job(self, job_id: str, instruction: str, pose: dict, snapshot: dict) -> None:
+        diagnostic = DiagnosticRun("pose", {
+            "job_id": job_id,
+            "instruction": instruction,
+            "pose": pose,
+            "snapshot": snapshot,
+        })
+        started = time.monotonic()
         with self._lock:
             if self._state["job_id"] != job_id:
                 return
             self._state["status"] = "running"
             self._revision += 1
         try:
-            raw_result = drop_redundant_hip_rotation(self._runner(instruction, pose, snapshot))
-            result = apply_pose_recipe(instruction, raw_result, snapshot)
+            if self._runner is run_claude_pose_agent:
+                runner_result = self._runner(instruction, pose, snapshot, diagnostic=diagnostic)
+            else:
+                runner_result = self._runner(instruction, pose, snapshot)
+            diagnostic.event("runner_result", result=runner_result)
+            # Position carries stance/contact while rotation carries orientation.
+            # Keep both when the model returns both; deleting hip rotation here
+            # previously erased requested turnout while leaving only a tiny move.
+            result = runner_result
             normalized = validate_pose_asset({
                 "schema_version": SCHEMA_VERSION,
                 "id": pose["id"],
@@ -389,6 +477,12 @@ class PoseAgentDaemon:
                 "revision": next_revision,
                 "edits": [*pose.get("edits", []), edit][-100:],
             })
+            diagnostic.event(
+                "completed",
+                elapsed_seconds=round(time.monotonic() - started, 3),
+                changed_controls=changed,
+                pose=normalized,
+            )
             with self._lock:
                 self._state.update({
                     "status": "complete",
@@ -398,6 +492,12 @@ class PoseAgentDaemon:
                 })
                 self._revision += 1
         except Exception as exc:
+            diagnostic.event(
+                "failed",
+                elapsed_seconds=round(time.monotonic() - started, 3),
+                error=str(exc),
+                traceback=traceback.format_exc(),
+            )
             with self._lock:
                 self._state.update({"status": "failed", "error": str(exc), "pose": None})
                 self._revision += 1

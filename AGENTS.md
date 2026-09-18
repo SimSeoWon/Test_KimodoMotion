@@ -22,6 +22,10 @@ ctest --test-dir vendor\kimodo.cpp\build -C Release --output-on-failure
 
 Use `py`, not bare `python`, for repository scripts. Generate a motion with `./scripts/generate-motion.ps1 -Prompt "a person waving"`; pass `-Backend cpu` when GPU memory is constrained. Tests requiring model bundles or parity fixtures do not download them automatically.
 
+## Runtime Process Consent
+
+Before stopping, starting, restarting, replacing, or force-killing any server, daemon, WebUI, Claude, Unreal, or other long-running process, ask the user first and wait for explicit approval. This is not a prohibition: perform the process operation when the user approves it. Approval to edit code, run tests, or diagnose a problem does not imply approval to alter already-running processes. Report the relevant PID and intended operation when asking. Do not silently replace a user-started daemon with an agent-started daemon.
+
 ## Coding Style & Naming Conventions
 
 Match nearby code. C++ uses four-space indentation, C++23, `snake_case` functions and variables, and lowercase source filenames; public API lives under the `kimodo` namespace. Keep warnings clean under MSVC `/W4 /permissive-` and GCC/Clang `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`. PowerShell parameters use `PascalCase`; local variables use `camelCase`. Follow Unreal naming conventions in testbed code, and verify unfamiliar UE5 APIs against installed engine source rather than guessing identifiers.

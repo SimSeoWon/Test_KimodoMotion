@@ -194,7 +194,7 @@ function updateAnimationPosePresets(items) {
 
 async function loadAnimationPosePresets() {
   try {
-    const response = await fetch("/api/keypose-presets");
+    const response = await fetch("/api/poses");
     const data = await response.json();
     updateAnimationPosePresets(data.items || []);
   } catch (_) { updateAnimationPosePresets([]); }
