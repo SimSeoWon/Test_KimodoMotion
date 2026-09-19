@@ -400,6 +400,28 @@ details.advanced .field { margin-top: 8px; }
 }
 
 .viewer-panel model-viewer { border-radius: 8px; }
+.runtime-row .hint { margin-top: 4px; }
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #191a1e;
+}
+.playback-controls button {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.playback-controls input[type="range"] { flex: 1; min-width: 100px; }
+.playback-controls > span { min-width: 64px; color: var(--text-dim); font-size: 11px; text-align: center; }
+.follow-camera-label { display: flex; align-items: center; gap: 5px; margin: 0; white-space: nowrap; }
 
 .viewer-empty {
   display: flex;
@@ -428,17 +450,35 @@ details.advanced .field { margin-top: 8px; }
 .pose-draft-row { padding: 8px; border: 1px solid #354763; border-radius: 7px; background: #151d29; }
 .pose-draft-row > span { white-space: nowrap; }
 .pose-draft-row #pose-label { flex: 1 1 180px; }
-.pose-draft-row #pose-agent-instruction {
-  flex: 2 1 320px;
+.pose-agent-command-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin: 0 8px 8px;
+}
+.pose-agent-command-row #pose-agent-instruction {
+  flex: 1 1 320px;
   min-height: 32px;
   height: 32px;
   margin: 0;
   resize: vertical;
 }
-.pose-draft-row #pose-agent-submit { color: #0d1117; background: var(--accent); border-color: var(--accent); font-weight: 700; }
-.pose-draft-row #pose-agent-submit:disabled { color: var(--text-dim); background: var(--border); cursor: wait; }
-.pose-agent-status { margin: -2px 8px 0; }
-.pose-agent-history { display: grid; gap: 5px; margin: 5px 8px 8px; }
+.pose-agent-command-row #pose-agent-submit { color: #0d1117; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+.pose-agent-command-row #pose-agent-submit:disabled { color: var(--text-dim); background: var(--border); cursor: wait; }
+.pose-agent-status { margin: -2px 8px 8px; }
+.pose-agent-history {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 52px;
+  max-height: 160px;
+  margin: 5px 8px 8px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0a0f16;
+}
 .pose-agent-history-heading { margin: 8px 8px 0; color: var(--text-dim); font-size: 11px; font-weight: 700; }
 .pose-agent-edit {
   padding: 6px 8px;
@@ -492,6 +532,15 @@ details.advanced .field { margin-top: 8px; }
 .pose-selection-row input[type="number"] { width: 70px; }
 .pose-selection-row input[type="text"] { flex: 1; min-width: 120px; }
 .pose-selection-row label { display: flex; align-items: center; gap: 4px; margin: 0; }
+.pose-controls {
+  align-content: flex-start;
+  max-height: 112px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0a0f16;
+}
 .pose-controls button { font-size: 12px; }
 
 .info {

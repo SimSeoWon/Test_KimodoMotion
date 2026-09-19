@@ -117,6 +117,19 @@
       </select>
     </div>
 
+    <div class="row runtime-row">
+      <div class="field">
+        <label>모션 모델</label>
+        <select id="motion-model"></select>
+        <p id="motion-model-hint" class="hint"></p>
+      </div>
+      <div class="field">
+        <label>텍스트 인코더 양자화</label>
+        <select id="text-encoder"></select>
+        <p id="text-encoder-hint" class="hint"></p>
+      </div>
+    </div>
+
     <div class="field full">
       <label>미리보기 캐릭터 (Mixamo)</label>
       <select id="mixamo-model"></select>
@@ -157,6 +170,13 @@
       style="width:100%; height:420px; background:#111;">
       <div slot="poster" class="viewer-empty">모델 불러오는 중...</div>
     </model-viewer>
+    <div class="playback-controls" aria-label="애니메이션 재생 제어">
+      <button type="button" id="playback-toggle">일시정지</button>
+      <button type="button" id="playback-reset">처음</button>
+      <input id="playback-timeline" type="range" min="0" max="1" step="0.001" value="0" aria-label="재생 위치">
+      <span id="playback-frame">0 / 0</span>
+      <label class="follow-camera-label"><input type="checkbox" id="follow-camera" checked> 캐릭터 따라가기</label>
+    </div>
     <div id="viewer-caption" class="viewer-caption" hidden></div>
     <div id="info" class="info"></div>
     <a id="download-link" class="download-link" hidden download>animation.glb 다운로드</a>
@@ -184,13 +204,15 @@
       <div class="pose-selection-row pose-draft-row" aria-label="현재 작업 포즈">
         <span>선택: <b id="pose-selection">없음</b></span>
         <input id="pose-label" type="text" maxlength="80" placeholder="포즈 이름 (예: 낮은 마보 자세)">
-        <textarea id="pose-agent-instruction" rows="1" placeholder="이 포즈에서 바꿀 내용 (예: 오른손만 조금 더 올려)"></textarea>
-        <button type="button" id="pose-agent-submit">포즈 조절</button>
         <button type="button" id="pose-preset-save">이 포즈 저장</button>
       </div>
-      <p id="pose-agent-status" class="hint pose-agent-status" role="status">현재 작업 포즈를 기준으로 명령한 부분만 수정합니다.</p>
       <div class="pose-agent-history-heading">이 포즈의 AI 수정 이력</div>
       <div id="pose-agent-history" class="pose-agent-history" aria-label="현재 포즈의 AI 수정 이력"></div>
+      <div class="pose-agent-command-row" aria-label="AI 포즈 조절 명령">
+        <textarea id="pose-agent-instruction" rows="1" placeholder="이 포즈에서 바꿀 내용 (예: 오른손만 조금 더 올려)"></textarea>
+        <button type="button" id="pose-agent-submit">포즈 조절</button>
+      </div>
+      <p id="pose-agent-status" class="hint pose-agent-status" role="status">현재 작업 포즈를 기준으로 명령한 부분만 수정합니다.</p>
       <div class="pose-preset-row">
         <select id="pose-preset"><option value="">저장된 포즈 불러오기...</option></select>
         <button type="button" id="pose-preset-load">불러오기</button>

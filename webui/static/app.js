@@ -17,6 +17,10 @@ const els = {
   seed: $("seed"),
   seedRandom: $("seed-random"),
   backend: $("backend"),
+  motionModel: $("motion-model"),
+  motionModelHint: $("motion-model-hint"),
+  textEncoder: $("text-encoder"),
+  textEncoderHint: $("text-encoder-hint"),
   mixamoModel: $("mixamo-model"),
   modelPath: $("model-path"),
   textBundlePath: $("text-bundle-path"),
@@ -31,6 +35,11 @@ const els = {
   historyList: $("history-list"),
   statusBanner: $("status-banner"),
   viewerCaption: $("viewer-caption"),
+  playbackToggle: $("playback-toggle"),
+  playbackReset: $("playback-reset"),
+  playbackTimeline: $("playback-timeline"),
+  playbackFrame: $("playback-frame"),
+  followCamera: $("follow-camera"),
   presetSelect: $("preset-select"),
   presetSave: $("preset-save"),
   presetDelete: $("preset-delete"),
@@ -74,6 +83,58 @@ function fmtTime(iso) {
 }
 
 let showingRealResult = false;
+let playbackFrames = 0;
+let playbackRoots = null;
+let seekingPlayback = false;
+let followTarget = [0, 1, 0];
+
+function formatBytes(value) {
+  if (!value) return "";
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return `${size.toFixed(unit > 1 ? 1 : 0)} ${units[unit]}`;
+}
+
+async function loadRuntimeOptions() {
+  try {
+    const response = await fetch("/api/runtime-options");
+    const data = await response.json();
+    els.motionModel.innerHTML = "";
+    for (const model of data.models || []) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = `${model.label} · ${formatBytes(model.bytes)}`;
+      option.dataset.commercial = String(model.commercial);
+      els.motionModel.appendChild(option);
+    }
+    els.textEncoder.innerHTML = "";
+    for (const encoder of data.encoders || []) {
+      const option = document.createElement("option");
+      option.value = encoder.id;
+      option.disabled = !encoder.available;
+      option.textContent = `${encoder.label} · ${encoder.available ? formatBytes(encoder.bytes) : "설치 안 됨"}`;
+      option.dataset.quantization = encoder.quantization;
+      els.textEncoder.appendChild(option);
+    }
+    els.motionModel.value = data.default_model;
+    els.textEncoder.value = data.default_encoder;
+    els.modelPath.value = els.motionModel.value;
+    els.textBundlePath.value = els.textEncoder.value;
+    updateRuntimeHints();
+  } catch (_) { /* 구형 서버에서는 고급 경로 입력을 그대로 사용한다. */ }
+}
+
+function updateRuntimeHints() {
+  const model = els.motionModel.selectedOptions[0];
+  const encoder = els.textEncoder.selectedOptions[0];
+  els.motionModelHint.textContent = model?.dataset.commercial === "false" ? "내부 R&D 전용 모델" : "상업 사용 가능한 체크포인트 계열";
+  els.textEncoderHint.textContent = encoder ? `LLM2Vec ${encoder.dataset.quantization || ""}` : "사용 가능한 인코더가 없습니다.";
+}
+
+els.motionModel.addEventListener("change", () => { els.modelPath.value = els.motionModel.value; updateRuntimeHints(); });
+els.textEncoder.addEventListener("change", () => { els.textBundlePath.value = els.textEncoder.value; updateRuntimeHints(); });
 
 function showResult(meta, extraNote) {
   showingRealResult = true;
@@ -82,6 +143,20 @@ function showResult(meta, extraNote) {
   els.viewerCaption.hidden = true;
   els.downloadLink.href = meta.glb_url;
   els.downloadLink.hidden = false;
+  playbackFrames = Number(meta.frame_count) || 0;
+  playbackRoots = null;
+  followTarget = [0, 1, 0];
+  els.playbackTimeline.value = "0";
+  els.playbackFrame.textContent = `0 / ${playbackFrames}`;
+  const rootUrl = meta.root_url || meta.glb_url?.replace(/animation\.glb$/, "root_positions.f32");
+  if (rootUrl) {
+    fetch(rootUrl).then((response) => {
+      if (!response.ok) throw new Error("root trajectory unavailable");
+      return response.arrayBuffer();
+    })
+      .then((buffer) => { playbackRoots = new Float32Array(buffer); })
+      .catch(() => { playbackRoots = null; });
+  }
   els.info.innerHTML = `
     <span><b>Prompt:</b> ${escapeHtml(meta.prompt)}${meta.sequence_mode ? " (스토리보드)" : ""}</span>
     ${meta.negative_prompt ? `<span><b>Negative:</b> ${escapeHtml(meta.negative_prompt)}</span>` : ""}
@@ -95,6 +170,42 @@ function showResult(meta, extraNote) {
     ${extraNote ? `<span>${escapeHtml(extraNote)}</span>` : ""}
   `;
 }
+
+els.playbackToggle.addEventListener("click", async () => {
+  if (els.viewer.paused) {
+    await els.viewer.play();
+    els.playbackToggle.textContent = "일시정지";
+  } else {
+    els.viewer.pause();
+    els.playbackToggle.textContent = "재생";
+  }
+});
+els.playbackReset.addEventListener("click", () => {
+  els.viewer.currentTime = 0;
+  els.playbackTimeline.value = "0";
+});
+els.playbackTimeline.addEventListener("pointerdown", () => { seekingPlayback = true; });
+els.playbackTimeline.addEventListener("pointerup", () => { seekingPlayback = false; });
+els.playbackTimeline.addEventListener("input", () => {
+  const duration = Number(els.viewer.duration) || 0;
+  if (duration) els.viewer.currentTime = Number(els.playbackTimeline.value) * duration;
+});
+
+function updatePlayback() {
+  const duration = Number(els.viewer.duration) || 0;
+  const current = Number(els.viewer.currentTime) || 0;
+  const ratio = duration ? Math.max(0, Math.min(1, current / duration)) : 0;
+  if (!seekingPlayback) els.playbackTimeline.value = String(ratio);
+  const frame = playbackFrames ? Math.min(playbackFrames - 1, Math.floor(ratio * playbackFrames)) : 0;
+  els.playbackFrame.textContent = `${playbackFrames ? frame + 1 : 0} / ${playbackFrames}`;
+  if (els.followCamera.checked && playbackRoots?.length >= (frame + 1) * 3) {
+    const target = [playbackRoots[frame * 3], playbackRoots[frame * 3 + 1] + 1, playbackRoots[frame * 3 + 2]];
+    for (let i = 0; i < 3; i += 1) followTarget[i] += (target[i] - followTarget[i]) * 0.12;
+    els.viewer.cameraTarget = `${followTarget[0]}m ${followTarget[1]}m ${followTarget[2]}m`;
+  }
+  requestAnimationFrame(updatePlayback);
+}
+requestAnimationFrame(updatePlayback);
 
 function escapeHtml(s) {
   const d = document.createElement("div");
@@ -325,6 +436,14 @@ function loadIntoForm(meta) {
   }
   els.seed.value = meta.seed;
   els.backend.value = meta.backend;
+  if (meta.model && [...els.motionModel.options].some((option) => option.value === meta.model)) {
+    els.motionModel.value = meta.model;
+    els.modelPath.value = meta.model;
+  }
+  if (meta.text_bundle && [...els.textEncoder.options].some((option) => option.value === meta.text_bundle)) {
+    els.textEncoder.value = meta.text_bundle;
+    els.textBundlePath.value = meta.text_bundle;
+  }
   if (meta.mixamo_model) els.mixamoModel.value = meta.mixamo_model;
   showResult(meta);
 }
@@ -576,6 +695,9 @@ els.captionImageInput.addEventListener("change", async () => {
 
 els.backend.addEventListener("change", refreshStatus);
 els.mixamoModel.addEventListener("change", showTposePreview);
+els.followCamera.addEventListener("change", () => {
+  if (!els.followCamera.checked) els.viewer.cameraTarget = "auto auto auto";
+});
 
 let poseEditor = null;
 async function initializePoseEditor() {
@@ -624,6 +746,7 @@ els.viewer.addEventListener("error", () => {
 });
 
 refreshStatus();
+loadRuntimeOptions();
 refreshHistory();
 loadMixamoModels();
 loadPresets();

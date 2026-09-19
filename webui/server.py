@@ -51,6 +51,8 @@ GENERATIONS_DIR = REPO_ROOT / "output_motion" / "generations"
 
 DEFAULT_MODEL = REPO_ROOT / "vendor" / "kimodo.cpp" / "models" / "kimodo-soma-rp-v1.1-f32.gguf"
 DEFAULT_TEXT_BUNDLE = REPO_ROOT / "vendor" / "kimodo.cpp" / "generated" / "llm2vec-text-bundle"
+KIMODO_MODELS_DIR = REPO_ROOT / "vendor" / "kimodo.cpp" / "models"
+KIMODO_GENERATED_DIR = REPO_ROOT / "vendor" / "kimodo.cpp" / "generated"
 BUILD_BIN = REPO_ROOT / "vendor" / "kimodo.cpp" / "build" / "bin" / "Release"
 BUILD_REL = REPO_ROOT / "vendor" / "kimodo.cpp" / "build" / "Release"
 KMD_GENERATE = BUILD_REL / "kmd-generate.exe"
@@ -165,6 +167,43 @@ def default_mixamo_model_id(models: list) -> str:
         if m["id"] != CAPSULE_MODEL_ID:
             return m["id"]
     return CAPSULE_MODEL_ID
+
+
+def list_runtime_options() -> dict:
+    """Discover installed Kimodo motion and text models without exposing arbitrary paths."""
+    model_labels = {
+        "soma-rp": "SOMA RP · 30 joints", "soma-seed": "SOMA SEED · 30 joints",
+        "g1-rp": "Unitree G1 RP · 34 joints", "g1-seed": "Unitree G1 SEED · 34 joints",
+        "smplx-rp": "SMPL-X RP · internal R&D only",
+    }
+    models = []
+    paths = sorted(KIMODO_MODELS_DIR.glob("*.gguf")) if KIMODO_MODELS_DIR.exists() else []
+    for path in paths:
+        lower = path.name.lower()
+        key = next((key for key in model_labels if key in lower), path.stem)
+        models.append({"id": str(path), "label": model_labels.get(key, path.stem),
+                       "bytes": path.stat().st_size, "commercial": "smplx" not in lower})
+
+    candidates = [
+        ("bf16", "BF16 reference", "llm2vec-text-bundle", "Llama-3-Kimodo-BF16.gguf"),
+        ("q8_0", "Q8_0 · recommended", "llm2vec-text-q8_0", "Llama-3-Kimodo-Q8_0.gguf"),
+        ("q6_k", "Q6_K", "llm2vec-text-q6_k", "Llama-3-Kimodo-Q6_K.gguf"),
+        ("q5_k", "Q5_K", "llm2vec-text-q5_k", "Llama-3-Kimodo-Q5_K.gguf"),
+        ("q4_k", "Q4_K", "llm2vec-text-q4_k", "Llama-3-Kimodo-Q4_K.gguf"),
+        ("q4_k_m", "Q4_K mixed", "llm2vec-text-q4_k_m", "Llama-3-Kimodo-Q4_K_M.gguf"),
+    ]
+    encoders = []
+    for encoder_id, label, legacy_name, packed_name in candidates:
+        packed_path = KIMODO_GENERATED_DIR / packed_name
+        legacy_path = KIMODO_GENERATED_DIR / legacy_name
+        path = packed_path if packed_path.exists() else legacy_path
+        size = path.stat().st_size if path.is_file() else sum(
+            item.stat().st_size for item in path.glob("*.gguf") if item.is_file()
+        ) if path.is_dir() else 0
+        encoders.append({"id": str(path), "quantization": encoder_id, "label": label,
+                         "available": path.exists(), "bytes": size})
+    return {"models": models, "encoders": encoders,
+            "default_model": str(DEFAULT_MODEL), "default_encoder": str(DEFAULT_TEXT_BUNDLE)}
 
 
 def resolve_mixamo_bind_arg(model_id: str, models: list) -> str:
@@ -325,6 +364,66 @@ def run_cancelable(cmd, **kwargs):
             if current_process is proc:
                 current_process = None
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+class PersistentGenerator:
+    """Keep kmd-generate's loaded model/text encoder alive between compatible requests."""
+
+    def __init__(self):
+        self.proc = None
+        self.key = None
+        self.lock = threading.Lock()
+
+    def close(self):
+        proc, self.proc, self.key = self.proc, None, None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=5)
+            except Exception:
+                proc.terminate()
+
+    def generate(self, model: Path, text_bundle: Path, backend: str, env: dict,
+                 transition: int, steps: int, seed: int, out_dir: Path,
+                 segments: list, prompt_paths: list) -> subprocess.CompletedProcess:
+        global current_process
+        key = (str(model), str(text_bundle), backend)
+        with self.lock:
+            if self.proc is None or self.proc.poll() is not None or self.key != key:
+                self.close()
+                self.proc = subprocess.Popen(
+                    [str(KMD_GENERATE), "--server", str(model), str(text_bundle)],
+                    cwd=str(REPO_ROOT), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                )
+                self.key = key
+            proc = self.proc
+            fields = [str(transition), str(steps), str(seed), str(out_dir) + "\\"]
+            for segment, prompt_path in zip(segments, prompt_paths):
+                fields.extend([str(int(segment["frame_count"])), str(prompt_path)])
+            with current_process_lock:
+                current_process = proc
+            try:
+                proc.stdin.write("\t".join(fields) + "\n")
+                proc.stdin.flush()
+                response = proc.stdout.readline().strip()
+            finally:
+                with current_process_lock:
+                    if current_process is proc:
+                        current_process = None
+            if not response:
+                self.close()
+                return subprocess.CompletedProcess(fields, proc.returncode or 1, "", "persistent worker stopped")
+            if response.startswith("ERR\t"):
+                return subprocess.CompletedProcess(fields, 1, "", response[4:])
+            if not response.startswith("OK\t"):
+                return subprocess.CompletedProcess(fields, 1, "", f"invalid worker response: {response}")
+            parts = response.split("\t")
+            frames = parts[1] if len(parts) > 1 else sum(int(s["frame_count"]) for s in segments)
+            return subprocess.CompletedProcess(fields, 0, f"generated {frames} frames (persistent worker)", "")
+
+
+PERSISTENT_GENERATOR = PersistentGenerator()
 
 
 def load_presets() -> list:
@@ -521,6 +620,7 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
     start = time.time()
 
     if sequence_mode:
+        prompt_paths = []
         gen_cmd = [
             str(KMD_GENERATE), str(model), str(text_bundle), "--sequence",
             str(transition_frames), str(steps), str(seed), str(out_dir) + "\\",
@@ -528,10 +628,14 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         for i, seg in enumerate(segments):
             seg_prompt_file = out_dir / f"segment_{i}_prompt.txt"
             seg_prompt_file.write_text(seg["prompt"].strip(), encoding="utf-8")
+            prompt_paths.append(seg_prompt_file)
             gen_cmd += [str(int(seg["frame_count"])), str(seg_prompt_file)]
+        worker_segments = [{"frame_count": int(seg["frame_count"])} for seg in segments]
     else:
         prompt_file = out_dir / "prompt.txt"
         prompt_file.write_text(prompt, encoding="utf-8")
+        prompt_paths = [prompt_file]
+        worker_segments = [{"frame_count": frame_count}]
         gen_cmd = [
             str(KMD_GENERATE), str(model), str(text_bundle), str(prompt_file),
             str(frame_count), str(steps), str(seed), str(out_dir) + "\\",
@@ -543,7 +647,15 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
 
     inference_started = time.monotonic()
     diagnostic.event("inference_started", command=gen_cmd, output_directory=str(out_dir))
-    gen_proc = run_cancelable(gen_cmd, env=env, cwd=str(REPO_ROOT))
+    persistent_used = not keyposes and not negative_prompt and (text_cfg is None or text_cfg == 2.0)
+    if persistent_used:
+        gen_proc = PERSISTENT_GENERATOR.generate(
+            model, text_bundle, backend, env,
+            transition_frames if sequence_mode else 1, steps, seed, out_dir,
+            worker_segments, prompt_paths,
+        )
+    else:
+        gen_proc = run_cancelable(gen_cmd, env=env, cwd=str(REPO_ROOT))
     diagnostic.event(
         "inference_finished",
         elapsed_seconds=round(time.monotonic() - inference_started, 3),
@@ -605,11 +717,13 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         "negative_prompt": negative_prompt or None,
         "model": str(model),
         "text_bundle": str(text_bundle),
+        "persistent_worker": persistent_used,
         "mixamo_model": mixamo_model,
         "keyposes": keyposes,
         "created_at": ts.isoformat(),
         "elapsed_sec": elapsed,
         "glb_url": f"/outputs/{gen_id}/animation.glb",
+        "root_url": f"/outputs/{gen_id}/root_positions.f32",
     }
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return meta
@@ -702,6 +816,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/mixamo-models":
                 models = list_mixamo_models()
                 self._send_json({"items": models, "default": default_mixamo_model_id(models)})
+            elif path == "/api/runtime-options":
+                self._send_json(list_runtime_options())
             elif path == "/api/keypose-schema":
                 self._send_json(get_keypose_schema())
             elif path == "/api/keyposes/state":
@@ -941,6 +1057,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        PERSISTENT_GENERATOR.close()
         POSE_CLI_RUNTIME.stop()
 
 
