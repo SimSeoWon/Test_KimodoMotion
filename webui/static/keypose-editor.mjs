@@ -855,6 +855,11 @@ export async function createKeyposeEditor(options) {
     orbit.update();
     applyTweenFrame();
     modelRoot.updateMatrixWorld(true);
+    // The ghost must track every display change -- gizmo drags, tweens, "새 포즈",
+    // deleting the current pose -- not only saves. Display is what the user edits,
+    // so it drives the canonical rig here; loads solve on canonical and write
+    // display first, so this never fights them.
+    if (display !== canonical) syncDisplayToCanonical();
     for (const definition of schema.controls) {
       const marker = markers.get(definition.id);
       const bone = bones.get(definition.soma_joint);
