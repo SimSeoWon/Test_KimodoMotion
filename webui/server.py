@@ -40,10 +40,10 @@ except ModuleNotFoundError:
     from webui.keypose_agent import STORE as KEYPOSE_STORE
 try:
     from pose_agent import POSE_AGENT, POSE_CLI_RUNTIME
-    from diagnostic_log import DiagnosticRun
+    from diagnostic_log import DiagnosticRun, ProcessRunLog
 except ModuleNotFoundError:
     from webui.pose_agent import POSE_AGENT, POSE_CLI_RUNTIME
-    from webui.diagnostic_log import DiagnosticRun
+    from webui.diagnostic_log import DiagnosticRun, ProcessRunLog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -63,6 +63,7 @@ EXPORT_GLB_PY = REPO_ROOT / "scripts" / "pretty_export_glb.py"
 # — 필수 아님). 여러 캐릭터를 처리해두면 전부 웹 UI 콤보박스에 나온다(2026-09-17).
 MIXAMO_PROCESSED_DIR = REPO_ROOT / "assets" / "mixamo_processed"
 CAPSULE_MODEL_ID = "capsule"
+PREVIEW_CACHE_VERSION = 2
 # 한 번만 돌리는 assets/extract_mixamo_soma30.py용(웹 UI 실행 자체엔 불필요) — 있으면 경로 표시.
 BLENDER_CANDIDATES = [
     Path(r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"),
@@ -87,6 +88,7 @@ CAPTION_TMP_DIR = REPO_ROOT / "webui" / "_caption_tmp"
 
 # 동시에 GPU/CPU 추론을 두 번 돌리지 않도록 직렬화한다 (generate-motion.ps1과 같은 전제).
 generation_lock = threading.Lock()
+preview_lock = threading.Lock()
 
 # 지금 돌고 있는 kmd-generate.exe Popen(있으면) + 그게 취소돼서 죽은 건지 구분하는 플래그.
 # generation_lock과 별도 락으로 보호 — /api/cancel은 생성 중인 스레드와 다른 스레드에서 온다.
@@ -511,6 +513,60 @@ def load_history() -> list:
     return items
 
 
+def delete_history_item(generation_id: str) -> bool:
+    if not isinstance(generation_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", generation_id):
+        raise ValueError("잘못된 히스토리 ID입니다.")
+    root = GENERATIONS_DIR.resolve()
+    target = (GENERATIONS_DIR / generation_id).resolve()
+    if target.parent != root:
+        raise ValueError("잘못된 히스토리 경로입니다.")
+    if not target.is_dir():
+        return False
+    meta_path = target / "meta.json"
+    if not meta_path.is_file():
+        raise ValueError("생성 결과 폴더가 아니어서 삭제하지 않았습니다.")
+    shutil.rmtree(target)
+    return True
+
+
+def ensure_preview_variant(generation_id: str, model_id: str) -> Path:
+    """Build and cache a display-only GLB for an existing raw motion."""
+    if not isinstance(generation_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", generation_id):
+        raise ValueError("잘못된 생성 ID입니다.")
+    models = list_mixamo_models()
+    model = next((item for item in models if item["id"] == model_id), None)
+    if model is None:
+        raise ValueError("알 수 없는 미리보기 캐릭터입니다.")
+    root = GENERATIONS_DIR.resolve()
+    motion_dir = (GENERATIONS_DIR / generation_id).resolve()
+    if motion_dir.parent != root or not (motion_dir / "meta.json").is_file():
+        raise ValueError("생성 결과를 찾을 수 없습니다.")
+    output_path = motion_dir / f"preview_v{PREVIEW_CACHE_VERSION}_{model_id}.glb"
+    if output_path.is_file():
+        return output_path
+    with preview_lock:
+        if output_path.is_file():
+            return output_path
+        temporary_path = motion_dir / f".{output_path.name}.{uuid.uuid4().hex}.tmp.glb"
+        command = [
+            sys.executable, str(EXPORT_GLB_PY),
+            "--motion-dir", str(motion_dir), "--output", str(temporary_path),
+            "--mixamo-bind", model["bind"] or "none",
+        ]
+        try:
+            proc = subprocess.run(command, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=300)
+            if proc.returncode != 0 or not temporary_path.is_file():
+                raise RuntimeError(
+                    "미리보기 GLB 생성 실패 (exit %d)\n%s" % (
+                        proc.returncode, (proc.stderr or proc.stdout)[-4000:]
+                    )
+                )
+            temporary_path.replace(output_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    return output_path
+
+
 FRAMES_STDOUT_RE = re.compile(r"generated (\d+) frames")
 
 
@@ -558,8 +614,6 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         raise ValueError("부정 프롬프트는 스토리보드 모드에서는 아직 지원하지 않습니다.")
     model = Path(params.get("model") or DEFAULT_MODEL)
     text_bundle = Path(params.get("text_bundle") or DEFAULT_TEXT_BUNDLE)
-    mixamo_models = list_mixamo_models()
-    mixamo_model = params.get("mixamo_model") or default_mixamo_model_id(mixamo_models)
     diagnostic.event("validated", settings={
         "sequence_mode": sequence_mode,
         "frame_count": frame_count,
@@ -570,7 +624,6 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         "negative_prompt": negative_prompt or None,
         "model": str(model),
         "text_bundle": str(text_bundle),
-        "mixamo_model": mixamo_model,
         "keyposes": keyposes,
     })
 
@@ -680,7 +733,7 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
     export_cmd = [
         sys.executable, str(EXPORT_GLB_PY),
         "--motion-dir", str(out_dir), "--output", str(glb_path),
-        "--mixamo-bind", resolve_mixamo_bind_arg(mixamo_model, mixamo_models),
+        "--mixamo-bind", "none",
     ]
     export_started = time.monotonic()
     diagnostic.event("export_started", command=export_cmd)
@@ -718,7 +771,6 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         "model": str(model),
         "text_bundle": str(text_bundle),
         "persistent_worker": persistent_used,
-        "mixamo_model": mixamo_model,
         "keyposes": keyposes,
         "created_at": ts.isoformat(),
         "elapsed_sec": elapsed,
@@ -832,6 +884,11 @@ class Handler(BaseHTTPRequestHandler):
                 model_id = (query.get("model") or [""])[0] or default_mixamo_model_id(models)
                 glb_path = ensure_tpose_variant(model_id, resolve_mixamo_bind_arg(model_id, models))
                 self._send_file(glb_path, "model/gltf-binary")
+            elif path == "/api/preview":
+                query = parse_qs(urlsplit(self.path).query)
+                generation_id = (query.get("generation") or [""])[0]
+                model_id = (query.get("model") or [CAPSULE_MODEL_ID])[0]
+                self._send_file(ensure_preview_variant(generation_id, model_id), "model/gltf-binary")
             elif path == "/api/presets":
                 self._send_json({"items": load_presets()})
             else:
@@ -860,6 +917,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"valid": False, "error": str(exc)}, 400)
             except Exception:
                 self._send_json({"valid": False, "error": "invalid JSON body"}, 400)
+            return
+
+        if path == "/api/history/delete":
+            try:
+                body = self._read_json_body()
+                deleted = delete_history_item(body.get("id", ""))
+                self._send_json({"deleted": deleted})
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, 400)
+            except Exception:
+                self._send_json({"error": "히스토리를 삭제하지 못했습니다."}, 500)
             return
 
         if path == "/api/pose-agent/command":
@@ -1031,6 +1099,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    process_log = ProcessRunLog("webui")
+    process_log.install()
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8188)
     parser.add_argument("--host", default="127.0.0.1")
@@ -1042,23 +1112,28 @@ def main():
         ensure_default_tpose_preview()
         sys.exit(0 if print_preflight(build_status()) else 1)
 
-    GENERATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    ensure_default_tpose_preview()
-    try:
-        POSE_CLI_RUNTIME.start()
-        print("포즈 LLM 서브 에이전트: 대기 중")
-    except Exception as exc:
-        print(f"포즈 LLM 서브 에이전트 시작 실패: {exc}")
+    # Bind before initializing any child runtime or generating local assets. If the
+    # requested address is already occupied, startup must fail without leaving a
+    # pose LLM or another WebUI-owned daemon behind.
     server = ExclusiveThreadingHTTPServer((args.host, args.port), Handler)
-    url = f"http://{args.host}:{args.port}/"
-    print(f"kimodo-motion 웹 UI: {url}")
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        GENERATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        ensure_default_tpose_preview()
+        try:
+            POSE_CLI_RUNTIME.start()
+            print("포즈 LLM 서브 에이전트: 대기 중")
+        except Exception as exc:
+            print(f"포즈 LLM 서브 에이전트 시작 실패: {exc}")
+        url = f"http://{args.host}:{args.port}/"
+        print(f"kimodo-motion 웹 UI: {url}")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
     finally:
         PERSISTENT_GENERATOR.close()
         POSE_CLI_RUNTIME.stop()
+        server.server_close()
 
 
 if __name__ == "__main__":

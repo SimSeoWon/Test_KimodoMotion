@@ -21,7 +21,8 @@ const els = {
   motionModelHint: $("motion-model-hint"),
   textEncoder: $("text-encoder"),
   textEncoderHint: $("text-encoder-hint"),
-  mixamoModel: $("mixamo-model"),
+  mixamoModelGenerate: $("mixamo-model-generate"),
+  mixamoModelPlayback: $("mixamo-model-playback"),
   modelPath: $("model-path"),
   textBundlePath: $("text-bundle-path"),
   batchCount: $("batch-count"),
@@ -83,6 +84,11 @@ function fmtTime(iso) {
 }
 
 let showingRealResult = false;
+let activeResult = null;
+
+function selectedPreviewCharacter() {
+  return els.mixamoModelPlayback.value || els.mixamoModelGenerate.value || "capsule";
+}
 let playbackFrames = 0;
 let playbackRoots = null;
 let seekingPlayback = false;
@@ -138,10 +144,12 @@ els.textEncoder.addEventListener("change", () => { els.textBundlePath.value = el
 
 function showResult(meta, extraNote) {
   showingRealResult = true;
-  els.viewer.src = meta.glb_url;
+  activeResult = meta;
+  const previewUrl = `/api/preview?generation=${encodeURIComponent(meta.id)}&model=${encodeURIComponent(selectedPreviewCharacter())}`;
+  els.viewer.src = previewUrl;
   els.viewer.removeAttribute("poster");
   els.viewerCaption.hidden = true;
-  els.downloadLink.href = meta.glb_url;
+  els.downloadLink.href = previewUrl;
   els.downloadLink.hidden = false;
   playbackFrames = Number(meta.frame_count) || 0;
   playbackRoots = null;
@@ -444,7 +452,6 @@ function loadIntoForm(meta) {
     els.textEncoder.value = meta.text_bundle;
     els.textBundlePath.value = meta.text_bundle;
   }
-  if (meta.mixamo_model) els.mixamoModel.value = meta.mixamo_model;
   showResult(meta);
 }
 
@@ -493,25 +500,44 @@ async function refreshStatus() {
 
 function showTposePreview() {
   if (showingRealResult) return; // 실제 생성 결과를 보고 있으면 콤보박스를 바꿔도 안 건드림
-  const modelId = els.mixamoModel.value || "capsule";
+  const modelId = selectedPreviewCharacter();
   els.viewer.removeAttribute("poster");
   els.viewer.src = "/api/tpose?model=" + encodeURIComponent(modelId);
   els.viewerCaption.textContent = "T포즈 미리보기 — 프롬프트를 입력하고 Generate를 눌러보세요";
   els.viewerCaption.hidden = false;
 }
 
+function updatePreviewCharacter() {
+  if (!showingRealResult || !activeResult) {
+    showTposePreview();
+    return;
+  }
+  const previewUrl = `/api/preview?generation=${encodeURIComponent(activeResult.id)}&model=${encodeURIComponent(selectedPreviewCharacter())}`;
+  els.viewer.src = previewUrl;
+  els.downloadLink.href = previewUrl;
+}
+
+function synchronizePreviewCharacter(source, target) {
+  target.value = source.value;
+  updatePreviewCharacter();
+}
+
 async function loadMixamoModels() {
   try {
     const res = await fetch("/api/mixamo-models");
     const data = await res.json();
-    els.mixamoModel.innerHTML = "";
+    els.mixamoModelGenerate.innerHTML = "";
+    els.mixamoModelPlayback.innerHTML = "";
     for (const m of data.items || []) {
-      const opt = document.createElement("option");
-      opt.value = m.id;
-      opt.textContent = m.label;
-      els.mixamoModel.appendChild(opt);
+      for (const select of [els.mixamoModelGenerate, els.mixamoModelPlayback]) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.label;
+        select.appendChild(opt);
+      }
     }
-    els.mixamoModel.value = data.default || "capsule";
+    els.mixamoModelGenerate.value = data.default || "capsule";
+    els.mixamoModelPlayback.value = data.default || "capsule";
     showTposePreview();
   } catch (e) {
     // 서버가 아직 안 떠있는 경우 등 — 조용히 무시
@@ -526,10 +552,28 @@ async function refreshHistory() {
     const card = document.createElement("div");
     card.className = "history-card";
     card.innerHTML = `
-      <div class="prompt">${meta.sequence_mode ? "🎬 " : ""}${escapeHtml(meta.prompt)}</div>
+      <div class="history-card-heading">
+        <div class="prompt">${meta.sequence_mode ? "🎬 " : ""}${escapeHtml(meta.prompt)}</div>
+        <button type="button" class="history-delete" title="이 생성 기록과 결과 파일 삭제">삭제</button>
+      </div>
       <div class="meta">${meta.frame_count}f · ${meta.steps} steps · seed ${meta.seed} · ${meta.backend} · ${fmtTime(meta.created_at)}</div>
     `;
     card.addEventListener("click", () => loadIntoForm(meta));
+    card.querySelector(".history-delete").addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!window.confirm(`'${meta.prompt}' 생성 기록과 결과 파일을 삭제할까요?`)) return;
+      const response = await fetch("/api/history/delete", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id: meta.id}),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        els.error.textContent = result.error || "히스토리 삭제 실패";
+        els.error.hidden = false;
+        return;
+      }
+      await refreshHistory();
+    });
     els.historyList.appendChild(card);
   }
 }
@@ -540,7 +584,6 @@ els.generateBtn.addEventListener("click", async () => {
     steps: parseInt(els.steps.value, 10),
     seed: els.seed.value === "" ? null : parseInt(els.seed.value, 10),
     backend: els.backend.value,
-    mixamo_model: els.mixamoModel.value || undefined,
     model: els.modelPath.value || undefined,
     text_bundle: els.textBundlePath.value || undefined,
     batch_count: parseInt(els.batchCount.value, 10) || 1,
@@ -694,7 +737,12 @@ els.captionImageInput.addEventListener("change", async () => {
 });
 
 els.backend.addEventListener("change", refreshStatus);
-els.mixamoModel.addEventListener("change", showTposePreview);
+els.mixamoModelGenerate.addEventListener("change", () => {
+  synchronizePreviewCharacter(els.mixamoModelGenerate, els.mixamoModelPlayback);
+});
+els.mixamoModelPlayback.addEventListener("change", () => {
+  synchronizePreviewCharacter(els.mixamoModelPlayback, els.mixamoModelGenerate);
+});
 els.followCamera.addEventListener("change", () => {
   if (!els.followCamera.checked) els.viewer.cameraTarget = "auto auto auto";
 });
@@ -707,7 +755,7 @@ async function initializePoseEditor() {
       poseStatus.textContent = "포징 편집기 모듈을 불러오는 중...";
       const { createKeyposeEditor } = await import("/static/keypose-editor.mjs");
       poseEditor = await createKeyposeEditor({
-        modelUrl: () => "/api/tpose?model=" + encodeURIComponent(els.mixamoModel.value || "capsule"),
+        modelUrl: () => "/api/tpose?model=" + encodeURIComponent(selectedPreviewCharacter()),
         onPresetsChanged: updateAnimationPosePresets,
       });
     } catch (error) {

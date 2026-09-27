@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+import io
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,10 +22,30 @@ class DiagnosticLogTest(unittest.TestCase):
 
                 self.assertEqual(1, first.number)
                 self.assertEqual(2, second.number)
+                self.assertRegex(first.path.name, r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_run-0001_pose_[0-9a-f]{8}\.jsonl$")
                 records = [json.loads(line) for line in first.path.read_text(encoding="utf-8").splitlines()]
                 self.assertEqual(["started", "completed"], [item["event"] for item in records])
                 self.assertEqual("손을 들어", records[0]["request"]["instruction"])
                 self.assertEqual(1.25, records[1]["elapsed_seconds"])
+
+    def test_process_log_tees_timestamped_stdout_and_stderr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with patch.object(diagnostic_log, "LOG_ROOT", Path(directory)), \
+                    patch.object(diagnostic_log.sys, "stdout", stdout), \
+                    patch.object(diagnostic_log.sys, "stderr", stderr), \
+                    patch.object(diagnostic_log.atexit, "register"):
+                run = diagnostic_log.ProcessRunLog("webui")
+                run.install()
+                print("startup step")
+                print("startup failure", file=sys.stderr)
+                run.close()
+
+                self.assertRegex(run.path.name, r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_run-0001_webui_[0-9a-f]{8}\.log$")
+                contents = run.path.read_text(encoding="utf-8")
+                self.assertIn("[stdout] startup step", contents)
+                self.assertIn("[stderr] startup failure", contents)
 
 
 if __name__ == "__main__":

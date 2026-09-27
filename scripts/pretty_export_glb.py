@@ -135,7 +135,10 @@ def create_capsule_doll_mesh(global_pos, parents, joints_filter=None):
         if parent == -1:
             _capsule(vertices, joints, weights, indices, global_pos[i], global_pos[i], radius, i)
         else:
-            _capsule(vertices, joints, weights, indices, global_pos[parent], global_pos[i], radius, i)
+            # A skeleton node's rotation drives the segment from that node to its
+            # child. Binding the segment to the child makes it rotate around the
+            # far endpoint and detach from its parent during animation.
+            _capsule(vertices, joints, weights, indices, global_pos[parent], global_pos[i], radius, parent)
     return vertices, joints, weights, indices
 
 

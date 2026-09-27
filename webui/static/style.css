@@ -306,6 +306,15 @@ details.advanced .field { margin-top: 8px; }
 }
 .timeline-segment.empty:hover { filter: none; }
 
+.preview-character-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.preview-character-label select { min-width: 8rem; }
+
 .segment-row {
   display: flex;
   gap: 6px;
@@ -580,6 +589,19 @@ details.advanced .field { margin-top: 8px; }
   font-size: 13px;
 }
 .history-card:hover { border-color: var(--accent); }
+.history-card-heading { display: flex; align-items: flex-start; gap: 8px; }
+.history-card-heading .prompt { flex: 1; min-width: 0; }
+.history-delete {
+  flex: none;
+  padding: 3px 7px;
+  border: 1px solid var(--danger);
+  border-radius: 5px;
+  color: var(--danger);
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+}
+.history-delete:hover { color: #0d1117; background: var(--danger); }
 .history-card .prompt {
   color: var(--text);
   margin-bottom: 6px;

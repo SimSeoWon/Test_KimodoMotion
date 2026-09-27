@@ -19,6 +19,8 @@ kimodo_ik_run.log
 # Python
 __pycache__/
 *.pyc
+.venv/
+runtime/python/
 
 # --- KimodoTestbed — 로컬 실험용 UE5.8 프로젝트. 통째로 git 밖에 둔다 ---
 # 결과물은 git이 아니라 UE5 Export/Migrate로 별도 반출한다 (사용자 결정 2026-09-15).
@@ -46,3 +48,6 @@ webui/keypose_agent_state.json
 webui/pose_agent_state.json
 webui/keypose_presets.json
 webui/logs/
+
+# Codex 로컬 운영 메모리 — 이 작업 사본에서만 사용하며 커밋하지 않는다.
+.codex-local/

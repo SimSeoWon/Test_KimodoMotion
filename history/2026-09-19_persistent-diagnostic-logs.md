@@ -12,8 +12,10 @@
 
 ## 결정
 
-모든 포즈 조절과 모션 생성 실행에 당일 공통 순번을 할당한다. 로그는
-`webui/logs/YYYY-MM-DD/NNNN_<kind>_<id>.jsonl`에 영구 저장하며 git에서는 제외한다.
+모든 WebUI 서버 실행, 포즈 조절, 모션 생성 실행에 당일 공통 순번을 할당한다. 로그는
+`.codex-local/logs/webui/YYYY-MM-DD/YYYY-MM-DD_HH-MM-SS_run-NNNN_<kind>_<id>.log|jsonl`에
+영구 저장하며 git에서는 제외한다. 서버 프로세스 로그는 stdout/stderr와 미처리 traceback을
+보이는 콘솔과 `.log` 파일에 동시에 기록하고, 포즈·모션 상세 진단은 기존 JSONL로 기록한다.
 
 포즈 로그에는 자연어 명령, 입력 PoseAsset, 전신 스냅샷, Claude 프로세스 PID와 시도 번호,
 `init`/`api_retry`/`result` 이벤트, stderr, 구조화 원본 결과, 레시피 적용 후 최종 포즈,

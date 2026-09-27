@@ -4,6 +4,12 @@
 
 Read the root `HANDOFF.md` first in every session, before `history/`. It is the shared, committed source of truth for the current state when Codex and Claude Code take turns on this repository: working-tree status, pending user decisions, and the next concrete tasks. Re-check the working tree with `git status` instead of trusting the recorded state, since the other agent may have changed it. When you finish work the user has confirmed, or after an important decision, record the rationale in `history/YYYY-MM-DD_topic.md` and rewrite the "최신 인계" section of `HANDOFF.md` to describe the current state (do not append; move the previous body to `docs/handoff/archive/HANDOFF_<date>.md`). Anything both agents must know belongs in `HANDOFF.md` or `history/`, not in `.codex-local/` or `.claude/`.
 
+## Local Agent Memory
+
+At the start of every session, if `.codex-local/INDEX.md` exists, read it completely before taking repository actions and follow its required initialization route. This ignored directory contains workstation- and operator-specific memory and capability maps that must not be committed. Treat this repository as a trunk workspace whose local runtime state, submodules, generated assets, and user-managed processes must be rediscovered at initialization rather than assumed.
+
+Before answering or acting on a user request, classify the request from the current conversation and check `.codex-local/INDEX.md` for a matching capability or conditional route. Load only the map required for that route (for example, skills, MCP, environment/toolchain, or long-running processes) and follow it before proposing an answer or taking action. This capability check also applies to conversational questions about what Codex can do; do not answer from memory when the local index routes that topic. Do not preload every conditional map, because the routing layer exists to keep unrelated instructions out of the context window.
+
 ## Project Structure & Module Organization
 
 This repository turns text prompts into UE5-ready motion assets. `scripts/generate-motion.ps1` orchestrates inference and GLB export. The pinned `vendor/kimodo.cpp/` submodule contains the C++23/GGML runtime: public headers in `include/`, implementation in `src/`, tests in `tests/`, converters in `scripts/`, and bundled GGML sources in `ggml/`. `KimodoTestbed/` is an ignored, local UE5.8 sandbox; do not treat it as deliverable source. Generated weights, build trees, `prompt.txt`, and `output_motion/` are intentionally untracked. Read the newest note in `history/` before substantial work and add a dated `YYYY-MM-DD_topic.md` note after important decisions.
@@ -29,6 +35,8 @@ Use `py`, not bare `python`, for repository scripts. Generate a motion with `./s
 ## Runtime Process Consent
 
 Before stopping, starting, restarting, replacing, or force-killing any server, daemon, WebUI, Claude, Unreal, or other long-running process, ask the user first and wait for explicit approval. This is not a prohibition: perform the process operation when the user approves it. Approval to edit code, run tests, or diagnose a problem does not imply approval to alter already-running processes. Report the relevant PID and intended operation when asking. Do not silently replace a user-started daemon with an agent-started daemon.
+
+Run user-managed WebUIs and other interactive long-running processes in a visible console so the user can inspect and stop them. Never start them with `-WindowStyle Hidden` unless the user explicitly requests hidden execution.
 
 ## Coding Style & Naming Conventions
 
