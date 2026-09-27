@@ -11,6 +11,7 @@ kmd-generate.exe -> export_glb.py 파이프라인을 그대로 실행하고,
 
 import argparse
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -66,6 +67,7 @@ KMD_GENERATE = BUILD_REL / "kmd-generate.exe"
 # vendor의 export_glb.py를 몽키패치해서 "본마다 작은 큐브" 대신 사람 실루엣에 가까운
 # 캡슐 래그돌 메시로 내보낸다(웹 미리보기 전용 — UE5 임포트 경로는 그대로 vendor 것을 씀).
 EXPORT_GLB_PY = REPO_ROOT / "scripts" / "pretty_export_glb.py"
+VENDOR_EXPORT_GLB_PY = REPO_ROOT / "vendor" / "kimodo.cpp" / "scripts" / "export_glb.py"
 # assets/extract_mixamo_soma30.py가 캐릭터별로 떨궈두는 프리뷰 바인딩들(없으면 캡슐로 폴백
 # — 필수 아님). 여러 캐릭터를 처리해두면 전부 웹 UI 콤보박스에 나온다(2026-09-17).
 MIXAMO_PROCESSED_DIR = REPO_ROOT / "assets" / "mixamo_processed"
@@ -76,7 +78,7 @@ BLENDER_CANDIDATES = [
     Path(r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"),
 ]
 
-# 생성 이력이 없을 때 빈 화면 대신 보여줄 T포즈 미리보기. 캐릭터별로 static/tpose_<id>.glb에 캐시.
+# 생성 이력이 없을 때 빈 화면 대신 보여줄 T포즈 미리보기. 캐릭터별로 static/tpose_<id>_<지문>.glb에 캐시.
 TPOSE_SRC_DIR = REPO_ROOT / "webui" / "_tpose_src"  # 합성 입력(항등 회전) — 모든 캐릭터가 공유
 TPOSE_NUM_JOINTS = 30  # vendor export_glb.SKELETONS["soma30"]["names"] 개수와 같아야 함
 
@@ -253,11 +255,41 @@ def build_status() -> dict:
         "blender_path": str(blender) if blender else None,
         "mixamo_preview_available": default_id != CAPSULE_MODEL_ID,
         "mixamo_models": models,
-        "tpose_preview_available": (STATIC_DIR / f"tpose_{default_id}.glb").exists(),
+        "tpose_preview_available": tpose_path(default_id, resolve_mixamo_bind_arg(default_id, models)).exists(),
         "caption_available": CAPTION_DEPS_AVAILABLE,
         "editor_running": is_editor_running(),
         "generation_in_progress": generation_lock.locked(),
     }
+
+
+def preview_fingerprint(bind_arg: str) -> str:
+    """Identify every input of a display GLB besides the motion itself.
+
+    A re-extracted character binding or an exporter change must produce a new cache
+    file; checking only that the old file exists kept serving stale meshes.
+    """
+    sources = [EXPORT_GLB_PY, VENDOR_EXPORT_GLB_PY]
+    if bind_arg and bind_arg != "none":
+        sources.append(Path(bind_arg))
+    parts = [f"v{PREVIEW_CACHE_VERSION}", bind_arg or "none"]
+    for path in sources:
+        try:
+            stat = path.stat()
+            parts.append(f"{path}:{stat.st_size}:{stat.st_mtime_ns}")
+        except OSError:
+            parts.append(f"{path}:missing")
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
+
+
+def remove_stale_variants(directory: Path, pattern: str, keep: Path) -> None:
+    matcher = re.compile(pattern)
+    for path in directory.glob("*.glb"):
+        if path != keep and matcher.fullmatch(path.name):
+            path.unlink(missing_ok=True)
+
+
+def tpose_path(model_id: str, bind_arg: str) -> Path:
+    return STATIC_DIR / f"tpose_{model_id}_{preview_fingerprint(bind_arg)}.glb"
 
 
 def ensure_tpose_variant(model_id: str, bind_arg: str) -> Path:
@@ -265,34 +297,43 @@ def ensure_tpose_variant(model_id: str, bind_arg: str) -> Path:
 
     export_glb류가 기대하는 raw 모션 입력(root_positions.f32/local_rotations_xyzw.f32)을
     항등 회전으로 직접 합성해서, 실제 생성과 똑같은 pretty_export_glb.py 경로로 내보낸다 —
-    프리뷰 메시 로직을 따로 두 벌 관리하지 않기 위함. 이미 있으면 다시 안 만든다.
+    프리뷰 메시 로직을 따로 두 벌 관리하지 않기 위함. 입력 지문이 같으면 다시 안 만든다.
     """
-    out_path = STATIC_DIR / f"tpose_{model_id}.glb"
+    out_path = tpose_path(model_id, bind_arg)
     if out_path.exists() or not EXPORT_GLB_PY.exists():
         return out_path
-    try:
-        TPOSE_SRC_DIR.mkdir(parents=True, exist_ok=True)
-        num_frames = 2  # 애니메이션 트랙엔 최소 1프레임이 필요해서 항등값 2개로 채움
-        root_bytes = struct.pack(f"<{num_frames * 3}f", *([0.0] * (num_frames * 3)))
-        identity_quat = (0.0, 0.0, 0.0, 1.0)
-        rot_flat = identity_quat * (num_frames * TPOSE_NUM_JOINTS)
-        rot_bytes = struct.pack(f"<{len(rot_flat)}f", *rot_flat)
-        (TPOSE_SRC_DIR / "root_positions.f32").write_bytes(root_bytes)
-        (TPOSE_SRC_DIR / "local_rotations_xyzw.f32").write_bytes(rot_bytes)
+    with preview_lock:
+        if out_path.exists():
+            return out_path
+        temporary_path = STATIC_DIR / f".{out_path.name}.{uuid.uuid4().hex}.tmp.glb"
+        try:
+            TPOSE_SRC_DIR.mkdir(parents=True, exist_ok=True)
+            num_frames = 2  # 애니메이션 트랙엔 최소 1프레임이 필요해서 항등값 2개로 채움
+            root_bytes = struct.pack(f"<{num_frames * 3}f", *([0.0] * (num_frames * 3)))
+            identity_quat = (0.0, 0.0, 0.0, 1.0)
+            rot_flat = identity_quat * (num_frames * TPOSE_NUM_JOINTS)
+            rot_bytes = struct.pack(f"<{len(rot_flat)}f", *rot_flat)
+            (TPOSE_SRC_DIR / "root_positions.f32").write_bytes(root_bytes)
+            (TPOSE_SRC_DIR / "local_rotations_xyzw.f32").write_bytes(rot_bytes)
 
-        cmd = [
-            sys.executable, str(EXPORT_GLB_PY),
-            "--motion-dir", str(TPOSE_SRC_DIR), "--output", str(out_path),
-            "--mixamo-bind", bind_arg,
-        ]
-        proc = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60)
-        if proc.returncode != 0 or not out_path.exists():
-            sys.stderr.write(
-                "[webui] T포즈 미리보기(%s) 생성 실패 (무시하고 계속 진행): %s\n"
-                % (model_id, (proc.stderr or proc.stdout)[-2000:])
-            )
-    except Exception as exc:
-        sys.stderr.write(f"[webui] T포즈 미리보기({model_id}) 생성 중 오류 (무시하고 계속 진행): {exc}\n")
+            cmd = [
+                sys.executable, str(EXPORT_GLB_PY),
+                "--motion-dir", str(TPOSE_SRC_DIR), "--output", str(temporary_path),
+                "--mixamo-bind", bind_arg,
+            ]
+            proc = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60)
+            if proc.returncode != 0 or not temporary_path.exists():
+                sys.stderr.write(
+                    "[webui] T포즈 미리보기(%s) 생성 실패 (무시하고 계속 진행): %s\n"
+                    % (model_id, (proc.stderr or proc.stdout)[-2000:])
+                )
+            else:
+                temporary_path.replace(out_path)
+                remove_stale_variants(STATIC_DIR, rf"tpose_{re.escape(model_id)}(_[0-9a-f]{{12}})?\.glb", out_path)
+        except Exception as exc:
+            sys.stderr.write(f"[webui] T포즈 미리보기({model_id}) 생성 중 오류 (무시하고 계속 진행): {exc}\n")
+        finally:
+            temporary_path.unlink(missing_ok=True)
     return out_path
 
 
@@ -618,7 +659,8 @@ def ensure_preview_variant(generation_id: str, model_id: str) -> Path:
     motion_dir = (GENERATIONS_DIR / generation_id).resolve()
     if motion_dir.parent != root or not (motion_dir / "meta.json").is_file():
         raise ValueError("생성 결과를 찾을 수 없습니다.")
-    output_path = motion_dir / f"preview_v{PREVIEW_CACHE_VERSION}_{model_id}.glb"
+    bind_arg = model["bind"] or "none"
+    output_path = motion_dir / f"preview_v{PREVIEW_CACHE_VERSION}_{model_id}_{preview_fingerprint(bind_arg)}.glb"
     if output_path.is_file():
         return output_path
     with preview_lock:
@@ -628,7 +670,7 @@ def ensure_preview_variant(generation_id: str, model_id: str) -> Path:
         command = [
             sys.executable, str(EXPORT_GLB_PY),
             "--motion-dir", str(motion_dir), "--output", str(temporary_path),
-            "--mixamo-bind", model["bind"] or "none",
+            "--mixamo-bind", bind_arg,
         ]
         try:
             proc = subprocess.run(command, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=300)
@@ -639,6 +681,8 @@ def ensure_preview_variant(generation_id: str, model_id: str) -> Path:
                     )
                 )
             temporary_path.replace(output_path)
+            remove_stale_variants(
+                motion_dir, rf"preview(_v\d+)?_{re.escape(model_id)}(_[0-9a-f]{{12}})?\.glb", output_path)
         finally:
             temporary_path.unlink(missing_ok=True)
     return output_path
@@ -1006,12 +1050,13 @@ class Handler(BaseHTTPRequestHandler):
                 query = parse_qs(urlsplit(self.path).query)
                 model_id = (query.get("model") or [""])[0] or default_mixamo_model_id(models)
                 glb_path = ensure_tpose_variant(model_id, resolve_mixamo_bind_arg(model_id, models))
-                self._send_file(glb_path, "model/gltf-binary")
+                self._send_file(glb_path, "model/gltf-binary", cache_control="no-store")
             elif path == "/api/preview":
                 query = parse_qs(urlsplit(self.path).query)
                 generation_id = (query.get("generation") or [""])[0]
                 model_id = (query.get("model") or [CAPSULE_MODEL_ID])[0]
-                self._send_file(ensure_preview_variant(generation_id, model_id), "model/gltf-binary")
+                self._send_file(ensure_preview_variant(generation_id, model_id), "model/gltf-binary",
+                                cache_control="no-store")
             elif path == "/api/presets":
                 self._send_json({"items": load_presets()})
             else:

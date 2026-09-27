@@ -71,3 +71,13 @@ CORS preflight를 강제당하고 서버는 허용하지 않는다). 유일하�
 파일을 쥐고 있을 수 있어 0.2초 간격으로 5회 재시도하고, 끝내 실패하면 진단 로그에 `output_cleanup_failed`를 남긴다.
 테스트 `test_cancelled_or_failed_sample_leaves_no_output_folder`는 수정 전 코드에서 실패하는 것을 확인했다. 라이브: 3개 배치의 2번째
 추론 중 취소 → 폴더는 완료된 1개만 남음(`meta.json` 있음).
+
+## 후속 — 미리보기 캐시 무효화 (보고서 §3)
+
+`preview_v2_<캐릭터>.glb`와 `static/tpose_<캐릭터>.glb`는 파일 존재만 확인해서, 바인딩을 다시 추출하거나 내보내기 코드를 고쳐도
+옛 메시가 나왔다. 이제 `preview_fingerprint()`가 `PREVIEW_CACHE_VERSION`, 바인딩 경로, 바인딩 JSON·`scripts/pretty_export_glb.py`·
+`vendor/.../export_glb.py`의 크기·수정 시각으로 12자리 지문을 만들어 파일 이름에 넣는다. 새로 만든 뒤에는 같은 캐릭터의 옛 변형
+(지문 없는 구형 포함)만 지운다 — `quinn`이 `quinn_simple`을 지우지 않도록 정규식으로 이름 전체를 맞춘다. T포즈도 임시 파일에 쓴 뒤 교체하고
+`preview_lock`으로 직렬화했다. 두 엔드포인트는 `Cache-Control: no-store`.
+테스트 `preview_cache_test.py` 3개는 수정 전 코드에서 모두 실패했다. 라이브: 첫 요청 시 `tpose_capsule.glb` → `tpose_capsule_<지문>.glb`로 교체,
+내보내기 스크립트 수정 시각만 1초 올리자 미리보기·T포즈가 새 지문으로 다시 만들어지고 옛 파일은 삭제됨(수정 시각은 원래대로 복원).
