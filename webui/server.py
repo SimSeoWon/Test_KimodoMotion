@@ -15,6 +15,7 @@ import json
 import mimetypes
 import os
 import random
+import queue
 import re
 import shutil
 import socket
@@ -44,6 +45,12 @@ try:
 except ModuleNotFoundError:
     from webui.pose_agent import POSE_AGENT, POSE_CLI_RUNTIME
     from webui.diagnostic_log import DiagnosticRun, ProcessRunLog
+try:
+    from generation_contract import normalize_generation_request, compile_keypose_constraints, motion_skeleton
+    from generation_batch import GenerationBatchState
+except ModuleNotFoundError:
+    from webui.generation_contract import normalize_generation_request, compile_keypose_constraints, motion_skeleton
+    from webui.generation_batch import GenerationBatchState
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -94,7 +101,16 @@ preview_lock = threading.Lock()
 # generation_lock과 별도 락으로 보호 — /api/cancel은 생성 중인 스레드와 다른 스레드에서 온다.
 current_process_lock = threading.Lock()
 current_process = None
-cancel_requested = False
+BATCH_STATE = GenerationBatchState()
+
+
+class GenerationCancelled(RuntimeError):
+    pass
+
+
+def check_generation_cancelled():
+    if BATCH_STATE.cancel_event.is_set():
+        raise GenerationCancelled("생성이 취소되었습니다.")
 
 
 def slugify(text: str, max_len: int = 40) -> str:
@@ -181,10 +197,15 @@ def list_runtime_options() -> dict:
     models = []
     paths = sorted(KIMODO_MODELS_DIR.glob("*.gguf")) if KIMODO_MODELS_DIR.exists() else []
     for path in paths:
+        try:
+            skeleton = motion_skeleton(path)
+        except (ValueError, OSError):
+            continue
         lower = path.name.lower()
         key = next((key for key in model_labels if key in lower), path.stem)
         models.append({"id": str(path), "label": model_labels.get(key, path.stem),
-                       "bytes": path.stat().st_size, "commercial": "smplx" not in lower})
+                       "bytes": path.stat().st_size, "commercial": "smplx" not in lower,
+                       "skeleton": skeleton, "supported": skeleton == "soma30"})
 
     candidates = [
         ("bf16", "BF16 reference", "llm2vec-text-bundle", "Llama-3-Kimodo-BF16.gguf"),
@@ -204,8 +225,11 @@ def list_runtime_options() -> dict:
         ) if path.is_dir() else 0
         encoders.append({"id": str(path), "quantization": encoder_id, "label": label,
                          "available": path.exists(), "bytes": size})
+    available_models = [item["id"] for item in models if item["supported"]]
+    available_encoders = [item["id"] for item in encoders if item["available"]]
     return {"models": models, "encoders": encoders,
-            "default_model": str(DEFAULT_MODEL), "default_encoder": str(DEFAULT_TEXT_BUNDLE)}
+            "default_model": str(DEFAULT_MODEL) if str(DEFAULT_MODEL) in available_models else next(iter(available_models), ""),
+            "default_encoder": str(DEFAULT_TEXT_BUNDLE) if str(DEFAULT_TEXT_BUNDLE) in available_encoders else next(iter(available_encoders), "")}
 
 
 def resolve_mixamo_bind_arg(model_id: str, models: list) -> str:
@@ -352,19 +376,39 @@ def print_preflight(status: dict) -> bool:
     return ok
 
 
-def run_cancelable(cmd, **kwargs):
+def stop_child_process(proc):
+    """Reap a WebUI-owned child before its replacement can load any weights."""
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    else:
+        proc.wait()
+
+
+def run_cancelable(cmd, *, timeout=1800, **kwargs):
     """subprocess.run과 같은 반환값(CompletedProcess)을 주지만, /api/cancel이 다른 스레드에서
     current_process.terminate()를 부를 수 있게 Popen 핸들을 전역에 잠깐 공개해둔다."""
     global current_process
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
     with current_process_lock:
+        check_generation_cancelled()
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, encoding="utf-8", errors="replace", **kwargs)
         current_process = proc
     try:
-        stdout, stderr = proc.communicate()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            stop_child_process(proc)
+            raise RuntimeError(f"생성 단계가 제한 시간({timeout}초)을 초과했습니다.") from None
     finally:
         with current_process_lock:
             if current_process is proc:
                 current_process = None
+    check_generation_cancelled()
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
@@ -374,16 +418,25 @@ class PersistentGenerator:
     def __init__(self):
         self.proc = None
         self.key = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def close(self):
-        proc, self.proc, self.key = self.proc, None, None
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.stdin.close()
-                proc.wait(timeout=5)
-            except Exception:
-                proc.terminate()
+        with self.lock:
+            proc = self.proc
+            if proc is None:
+                return
+            if proc.poll() is None:
+                try:
+                    proc.stdin.close()
+                    proc.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    stop_child_process(proc)
+            else:
+                proc.wait()
+            for stream in (proc.stdin, proc.stdout):
+                if stream is not None:
+                    stream.close()
+            self.proc = self.key = None
 
     def generate(self, model: Path, text_bundle: Path, backend: str, env: dict,
                  transition: int, steps: int, seed: int, out_dir: Path,
@@ -391,12 +444,14 @@ class PersistentGenerator:
         global current_process
         key = (str(model), str(text_bundle), backend)
         with self.lock:
+            check_generation_cancelled()
             if self.proc is None or self.proc.poll() is not None or self.key != key:
                 self.close()
                 self.proc = subprocess.Popen(
                     [str(KMD_GENERATE), "--server", str(model), str(text_bundle)],
                     cwd=str(REPO_ROOT), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                    encoding="utf-8", errors="replace",
                 )
                 self.key = key
             proc = self.proc
@@ -404,15 +459,36 @@ class PersistentGenerator:
             for segment, prompt_path in zip(segments, prompt_paths):
                 fields.extend([str(int(segment["frame_count"])), str(prompt_path)])
             with current_process_lock:
+                if BATCH_STATE.cancel_event.is_set():
+                    self.close()
+                    check_generation_cancelled()
                 current_process = proc
             try:
                 proc.stdin.write("\t".join(fields) + "\n")
                 proc.stdin.flush()
-                response = proc.stdout.readline().strip()
+                responses = queue.Queue()
+
+                def read_response():
+                    try:
+                        responses.put(proc.stdout.readline().strip())
+                    except (OSError, ValueError):
+                        responses.put("")
+
+                threading.Thread(target=read_response, daemon=True).start()
+                try:
+                    response = responses.get(timeout=1800)
+                except queue.Empty:
+                    self.close()
+                    raise RuntimeError("모션 워커가 1800초 안에 응답하지 않았습니다.") from None
+            except OSError:
+                self.close()
+                check_generation_cancelled()
+                raise
             finally:
                 with current_process_lock:
                     if current_process is proc:
                         current_process = None
+            check_generation_cancelled()
             if not response:
                 self.close()
                 return subprocess.CompletedProcess(fields, proc.returncode or 1, "", "persistent worker stopped")
@@ -457,6 +533,7 @@ def load_saved_poses() -> list:
             # rewriting the user's local file during a read.
             candidate = {
                 "schema_version": item.get("schema_version", 1),
+                "skeleton": item.get("skeleton"),
                 "id": item.get("id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"kimodo-pose:{item.get('name', '')}")),
                 "name": item.get("name", ""),
                 "controls": item.get("controls"),
@@ -571,9 +648,8 @@ FRAMES_STDOUT_RE = re.compile(r"generated (\d+) frames")
 
 
 def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
-    global cancel_requested
-    with current_process_lock:
-        cancel_requested = False
+    check_generation_cancelled()
+    params = normalize_generation_request(params)
 
     prompt = (params.get("prompt") or "").strip()
     segments = params.get("segments") or []  # 스토리보드 모드: [{"prompt":str,"frame_count":int}, ...]
@@ -633,12 +709,16 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         )
     if not model.exists():
         raise RuntimeError(f"모델 가중치가 없습니다 ({model}). download_gguf_weights.py로 먼저 받으세요.")
+    if motion_skeleton(model) != "soma30":
+        raise ValueError("현재 포즈·GLB 내보내기는 SOMA30 모션 모델만 지원합니다.")
+    if not text_bundle.exists():
+        raise ValueError(f"텍스트 인코더를 찾을 수 없습니다: {text_bundle}")
 
     ts = datetime.now(timezone.utc)
     slug_source = prompt if not sequence_mode else " -> ".join(s["prompt"].strip() for s in segments)
-    gen_id = f"{ts.strftime('%Y%m%d-%H%M%S')}_{slugify(slug_source)}"
+    gen_id = f"{ts.strftime('%Y%m%d-%H%M%S')}_{slugify(slug_source)}_{uuid.uuid4().hex[:12]}"
     out_dir = GENERATIONS_DIR / gen_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=False)
 
     env = os.environ.copy()
     env["PATH"] = f"{BUILD_BIN};{BUILD_REL};" + env.get("PATH", "")
@@ -651,18 +731,10 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
     else:
         env.pop("KIMODO_TEXT_CFG", None)
 
-    if keyposes:
+    constraint_rows = compile_keypose_constraints(keyposes) if keyposes else []
+    if constraint_rows:
         constraint_path = out_dir / "keypose_constraints.tsv"
-        constraint_lines = ["# frame joint pos px py pz rot qx qy qz qw"]
-        for keypose in keyposes["keyposes"]:
-            for control_id, constraint in keypose["controls"].items():
-                definition = next(item for item in get_keypose_schema()["controls"] if item["id"] == control_id)
-                position = constraint.get("position", [0.0, 0.0, 0.0])
-                rotation = constraint.get("rotation_xyzw", [0.0, 0.0, 0.0, 1.0])
-                constraint_lines.append(" ".join(map(str, [
-                    keypose["frame"], definition["joint_index"], int("position" in constraint), *position,
-                    int("rotation_xyzw" in constraint), *rotation,
-                ])))
+        constraint_lines = ["# frame joint pos px py pz rot qx qy qz qw", *constraint_rows]
         constraint_path.write_text("\n".join(constraint_lines) + "\n", encoding="utf-8")
         env["KIMODO_CONSTRAINTS_FILE"] = str(constraint_path)
         (out_dir / "keyposes.json").write_text(
@@ -699,8 +771,9 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
             gen_cmd.append(str(negative_prompt_file))
 
     inference_started = time.monotonic()
+    BATCH_STATE.update(stage="inference")
     diagnostic.event("inference_started", command=gen_cmd, output_directory=str(out_dir))
-    persistent_used = not keyposes and not negative_prompt and (text_cfg is None or text_cfg == 2.0)
+    persistent_used = not constraint_rows and not negative_prompt and (text_cfg is None or text_cfg == 2.0)
     if persistent_used:
         gen_proc = PERSISTENT_GENERATOR.generate(
             model, text_bundle, backend, env,
@@ -708,6 +781,8 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
             worker_segments, prompt_paths,
         )
     else:
+        PERSISTENT_GENERATOR.close()
+        check_generation_cancelled()
         gen_proc = run_cancelable(gen_cmd, env=env, cwd=str(REPO_ROOT))
     diagnostic.event(
         "inference_finished",
@@ -717,10 +792,7 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         stderr=gen_proc.stderr,
     )
     if gen_proc.returncode != 0:
-        with current_process_lock:
-            was_cancelled = cancel_requested
-        if was_cancelled:
-            raise RuntimeError("생성이 취소되었습니다.")
+        check_generation_cancelled()
         raise RuntimeError(
             "kmd-generate.exe 실패 (exit %d)\n%s" % (
                 gen_proc.returncode, (gen_proc.stderr or gen_proc.stdout)[-4000:]
@@ -736,9 +808,10 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         "--mixamo-bind", "none",
     ]
     export_started = time.monotonic()
+    check_generation_cancelled()
+    BATCH_STATE.update(stage="export")
     diagnostic.event("export_started", command=export_cmd)
-    export_proc = subprocess.run(export_cmd, cwd=str(REPO_ROOT),
-                                  capture_output=True, text=True, timeout=300)
+    export_proc = run_cancelable(export_cmd, cwd=str(REPO_ROOT), timeout=300)
     diagnostic.event(
         "export_finished",
         elapsed_seconds=round(time.monotonic() - export_started, 3),
@@ -772,6 +845,12 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
         "text_bundle": str(text_bundle),
         "persistent_worker": persistent_used,
         "keyposes": keyposes,
+        "skeleton": "soma30",
+        "fps": 30,
+        "batch_id": params.get("_batch", {}).get("id"),
+        "batch_index": params.get("_batch", {}).get("index", 1),
+        "batch_count": params.get("_batch", {}).get("count", 1),
+        "batch_base_seed": params.get("_batch", {}).get("base_seed", seed),
         "created_at": ts.isoformat(),
         "elapsed_sec": elapsed,
         "glb_url": f"/outputs/{gen_id}/animation.glb",
@@ -796,6 +875,27 @@ def run_generation(params: dict) -> dict:
             traceback=traceback.format_exc(),
         )
         raise
+
+
+def run_generation_batch(params: dict) -> dict:
+    """Called under generation_lock. Completed samples survive cancellation/failure."""
+    params = normalize_generation_request(params)
+    count, base_seed = params["batch_count"], params["seed"]
+    batch_id = uuid.uuid4().hex
+    BATCH_STATE.start(batch_id, count, base_seed)
+    try:
+        for index in range(count):
+            check_generation_cancelled()
+            BATCH_STATE.update(current_index=index + 1, current_seed=base_seed + index, stage="preparing")
+            iteration = {**params, "seed": base_seed + index, "batch_count": 1,
+                         "_batch": {"id": batch_id, "index": index + 1, "count": count, "base_seed": base_seed}}
+            BATCH_STATE.completed(run_generation(iteration))
+        check_generation_cancelled()
+        return BATCH_STATE.finish("complete")
+    except GenerationCancelled:
+        return BATCH_STATE.finish("cancelled")
+    except Exception as exc:
+        return BATCH_STATE.finish("failed", str(exc))
 
 
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
@@ -865,6 +965,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(build_status())
             elif path == "/api/history":
                 self._send_json({"items": load_history()})
+            elif path == "/api/generation-state":
+                self._send_json(BATCH_STATE.snapshot())
             elif path == "/api/mixamo-models":
                 models = list_mixamo_models()
                 self._send_json({"items": models, "default": default_mixamo_model_id(models)})
@@ -903,8 +1005,32 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw.decode("utf-8"))
 
+    def _mutation_rejection(self):
+        """Reject state-changing requests that a foreign page could forge.
+
+        Host blocks DNS rebinding, Origin blocks cross-site form/fetch posts, and a
+        JSON Content-Type forces browsers into a CORS preflight this server never grants.
+        """
+        bound_host, port = self.server.server_address[:2]
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+        if bound_host not in ("", "0.0.0.0", "::", "127.0.0.1", "::1"):
+            allowed.add(f"{bound_host}:{port}")
+        if self.headers.get("Host", "").lower() not in allowed:
+            return 403, "허용되지 않은 Host 헤더입니다."
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in {f"http://{host}" for host in allowed}:
+            return 403, "허용되지 않은 Origin입니다."
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            return 415, "Content-Type: application/json 요청만 허용합니다."
+        return None
+
     def do_POST(self):
         path = unquote(self.path.split("?", 1)[0])
+        rejection = self._mutation_rejection()
+        if rejection:
+            self._send_json({"error": rejection[1]}, rejection[0])
+            return
 
         if path == "/api/keyposes/validate":
             try:
@@ -972,6 +1098,7 @@ class Handler(BaseHTTPRequestHandler):
                 existing = next((item for item in load_saved_poses() if item.get("name") == name), None)
                 candidate = {
                     "schema_version": requested.get("schema_version", 1),
+                    "skeleton": requested.get("skeleton"),
                     "id": requested.get("id") or (existing or {}).get("id") or str(uuid.uuid4()),
                     "name": name,
                     "controls": requested.get("controls"),
@@ -1002,16 +1129,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/cancel":
-            global cancel_requested
             with current_process_lock:
-                proc = current_process
-                if proc is not None:
-                    cancel_requested = True
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-                self._send_json({"cancelled": True})
-            else:
-                self._send_json({"cancelled": False, "message": "실행 중인 생성이 없습니다."})
+                cancelled = BATCH_STATE.request_cancel()
+                if cancelled and current_process is not None and current_process.poll() is None:
+                    try:
+                        current_process.terminate()
+                    except OSError:
+                        pass  # It may have exited while cancellation was requested.
+            self._send_json({"cancelled": cancelled})
             return
 
         if path == "/api/caption":
@@ -1079,17 +1204,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "이미 다른 생성 작업이 진행 중입니다. 끝날 때까지 기다려주세요."}, 409)
             return
         try:
-            batch_count = max(1, min(int(params.get("batch_count", 1) or 1), 8))
-            base_seed = params.get("seed")
-            metas = []
-            for i in range(batch_count):
-                iter_params = dict(params)
-                if base_seed not in (None, "", -1, "-1"):
-                    iter_params["seed"] = int(base_seed) + i
-                else:
-                    iter_params["seed"] = None
-                metas.append(run_generation(iter_params))
-            self._send_json(metas[0] if batch_count == 1 else {"items": metas})
+            result = run_generation_batch(params)
+            if result["status"] == "complete" and result["count"] == 1:
+                self._send_json(result["items"][0])
+            else:
+                self._send_json(result, 500 if result["status"] == "failed" else 200)
         except ValueError as exc:
             self._send_json({"error": str(exc)}, 400)
         except Exception as exc:

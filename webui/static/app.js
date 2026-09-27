@@ -1,3 +1,5 @@
+import {restoreGenerationForm, samplesInBatch} from "./generation-form.mjs";
+
 const $ = (id) => document.getElementById(id);
 
 const els = {
@@ -33,6 +35,10 @@ const els = {
   viewer: $("viewer"),
   info: $("info"),
   downloadLink: $("download-link"),
+  previewDownloadLink: $("preview-download-link"),
+  batchResults: $("batch-results"),
+  batchSummary: $("batch-summary"),
+  batchCandidates: $("batch-candidates"),
   historyList: $("history-list"),
   statusBanner: $("status-banner"),
   viewerCaption: $("viewer-caption"),
@@ -85,6 +91,12 @@ function fmtTime(iso) {
 
 let showingRealResult = false;
 let activeResult = null;
+let historyItems = [];
+let batchItems = [];
+let pollingGeneration = false;
+let remoteGenerationRunning = false;
+let submittingGeneration = false;
+let observedBatchId = null;
 
 function selectedPreviewCharacter() {
   return els.mixamoModelPlayback.value || els.mixamoModelGenerate.value || "capsule";
@@ -111,7 +123,8 @@ async function loadRuntimeOptions() {
     for (const model of data.models || []) {
       const option = document.createElement("option");
       option.value = model.id;
-      option.textContent = `${model.label} · ${formatBytes(model.bytes)}`;
+      option.disabled = model.supported === false;
+      option.textContent = `${model.label} · ${formatBytes(model.bytes)}${model.supported === false ? " · 내보내기 미지원" : ""}`;
       option.dataset.commercial = String(model.commercial);
       els.motionModel.appendChild(option);
     }
@@ -149,8 +162,10 @@ function showResult(meta, extraNote) {
   els.viewer.src = previewUrl;
   els.viewer.removeAttribute("poster");
   els.viewerCaption.hidden = true;
-  els.downloadLink.href = previewUrl;
+  els.downloadLink.href = meta.glb_url;
   els.downloadLink.hidden = false;
+  els.previewDownloadLink.href = previewUrl;
+  els.previewDownloadLink.hidden = false;
   playbackFrames = Number(meta.frame_count) || 0;
   playbackRoots = null;
   followTarget = [0, 1, 0];
@@ -162,8 +177,8 @@ function showResult(meta, extraNote) {
       if (!response.ok) throw new Error("root trajectory unavailable");
       return response.arrayBuffer();
     })
-      .then((buffer) => { playbackRoots = new Float32Array(buffer); })
-      .catch(() => { playbackRoots = null; });
+      .then((buffer) => { if (activeResult?.id === meta.id) playbackRoots = new Float32Array(buffer); })
+      .catch(() => { if (activeResult?.id === meta.id) playbackRoots = null; });
   }
   els.info.innerHTML = `
     <span><b>Prompt:</b> ${escapeHtml(meta.prompt)}${meta.sequence_mode ? " (스토리보드)" : ""}</span>
@@ -177,6 +192,60 @@ function showResult(meta, extraNote) {
     <span><b>생성:</b> ${fmtTime(meta.created_at)}</span>
     ${extraNote ? `<span>${escapeHtml(extraNote)}</span>` : ""}
   `;
+  for (const button of els.batchCandidates.querySelectorAll("button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.generationId === meta.id));
+  }
+}
+
+function renderBatchResults(items, count = items.length) {
+  batchItems = items;
+  els.batchResults.hidden = !items.length;
+  els.batchSummary.textContent = `생성 결과 ${items.length} / ${count} · 후보를 선택해 비교하세요`;
+  els.batchCandidates.replaceChildren();
+  for (const meta of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.generationId = meta.id;
+    button.textContent = `후보 ${meta.batch_index || 1} · Seed ${meta.seed}`;
+    button.setAttribute("aria-pressed", String(activeResult?.id === meta.id));
+    button.addEventListener("click", () => showResult(meta));
+    els.batchCandidates.appendChild(button);
+  }
+}
+
+function setGenerationBusy(busy) {
+  els.generateBtn.disabled = busy;
+  els.cancelBtn.hidden = !busy;
+  els.progress.hidden = !busy;
+}
+
+async function pollGenerationState() {
+  if (pollingGeneration) return;
+  pollingGeneration = true;
+  try {
+    const response = await fetch("/api/generation-state");
+    if (!response.ok) return;
+    const state = await response.json();
+    const running = state.status === "running";
+    if (running || (remoteGenerationRunning && observedBatchId === state.batch_id)) {
+      const items = state.items || [];
+      if (observedBatchId !== state.batch_id || batchItems.length !== items.length) {
+        observedBatchId = state.batch_id;
+        renderBatchResults(items, state.count);
+        if (items.length && !items.some((item) => item.id === activeResult?.id)) showResult(items[0]);
+      }
+      const stages = {preparing: "준비", inference: "모션 생성", export: "내보내기", cancelling: "취소 중"};
+      els.progress.textContent = `${state.current_index} / ${state.count} · ${stages[state.stage] || "생성 중"} · 완료 ${state.completed}개`;
+      if (!running) {
+        els.batchSummary.textContent = `${state.status === "cancelled" ? "취소됨" : state.status === "failed" ? "생성 중단" : "생성 완료"} · ${state.completed} / ${state.count}개 보존`;
+        if (state.error) { els.error.textContent = state.error; els.error.hidden = false; }
+        await refreshHistory();
+      }
+    }
+    remoteGenerationRunning = running;
+    setGenerationBusy(running || submittingGeneration);
+  } catch (_) { /* A request may still be running while the connection recovers. */ }
+  finally { pollingGeneration = false; }
 }
 
 els.playbackToggle.addEventListener("click", async () => {
@@ -421,38 +490,14 @@ function toggleStoryboardPanels() {
 }
 
 function loadIntoForm(meta) {
-  els.storyboardToggle.checked = !!meta.sequence_mode;
-  toggleStoryboardPanels();
-  if (meta.sequence_mode && meta.segments) {
-    els.transitionFrames.value = meta.transition_frames || 15;
-    els.segmentList.innerHTML = "";
-    for (const seg of meta.segments) addSegmentRow(seg.frame_count, seg.prompt);
-  } else {
-    els.prompt.value = meta.prompt;
-    els.negativePrompt.value = meta.negative_prompt || "";
-    els.frameCount.value = meta.frame_count;
-    els.frameCountRange.value = Math.min(Math.max(meta.frame_count, els.frameCountRange.min), els.frameCountRange.max);
-    els.frameCountVal.textContent = meta.frame_count;
-  }
-  els.steps.value = meta.steps;
-  els.stepsRange.value = Math.min(Math.max(meta.steps, els.stepsRange.min), els.stepsRange.max);
-  els.stepsVal.textContent = meta.steps;
-  if (meta.text_cfg != null) {
-    els.textCfg.value = meta.text_cfg;
-    els.textCfgRange.value = Math.min(Math.max(meta.text_cfg, els.textCfgRange.min), els.textCfgRange.max);
-    els.textCfgVal.textContent = meta.text_cfg;
-  }
-  els.seed.value = meta.seed;
-  els.backend.value = meta.backend;
-  if (meta.model && [...els.motionModel.options].some((option) => option.value === meta.model)) {
-    els.motionModel.value = meta.model;
-    els.modelPath.value = meta.model;
-  }
-  if (meta.text_bundle && [...els.textEncoder.options].some((option) => option.value === meta.text_bundle)) {
-    els.textEncoder.value = meta.text_bundle;
-    els.textBundlePath.value = meta.text_bundle;
-  }
+  restoreGenerationForm(els, meta, animationKeyposes, {
+    toggleStoryboard: toggleStoryboardPanels, addSegment: addSegmentRow, renderPoses: renderAnimationPoses,
+  });
+  updateRuntimeHints();
+  const items = samplesInBatch(historyItems, meta);
+  renderBatchResults(items.length ? items : [meta], meta.batch_count || 1);
   showResult(meta);
+  publishAnimationPoses().catch((error) => { els.animationPoseStatus.textContent = error.message; });
 }
 
 let presetItems = [];
@@ -514,7 +559,7 @@ function updatePreviewCharacter() {
   }
   const previewUrl = `/api/preview?generation=${encodeURIComponent(activeResult.id)}&model=${encodeURIComponent(selectedPreviewCharacter())}`;
   els.viewer.src = previewUrl;
-  els.downloadLink.href = previewUrl;
+  els.previewDownloadLink.href = previewUrl;
 }
 
 function synchronizePreviewCharacter(source, target) {
@@ -547,6 +592,7 @@ async function loadMixamoModels() {
 async function refreshHistory() {
   const res = await fetch("/api/history");
   const data = await res.json();
+  historyItems = data.items || [];
   els.historyList.innerHTML = "";
   for (const meta of data.items) {
     const card = document.createElement("div");
@@ -556,7 +602,7 @@ async function refreshHistory() {
         <div class="prompt">${meta.sequence_mode ? "🎬 " : ""}${escapeHtml(meta.prompt)}</div>
         <button type="button" class="history-delete" title="이 생성 기록과 결과 파일 삭제">삭제</button>
       </div>
-      <div class="meta">${meta.frame_count}f · ${meta.steps} steps · seed ${meta.seed} · ${meta.backend} · ${fmtTime(meta.created_at)}</div>
+      <div class="meta">${meta.batch_count > 1 ? `후보 ${meta.batch_index}/${meta.batch_count} · ` : ""}${meta.frame_count}f · ${meta.steps} steps · seed ${meta.seed} · ${meta.backend} · ${fmtTime(meta.created_at)}</div>
     `;
     card.addEventListener("click", () => loadIntoForm(meta));
     card.querySelector(".history-delete").addEventListener("click", async (event) => {
@@ -581,27 +627,28 @@ async function refreshHistory() {
 els.generateBtn.addEventListener("click", async () => {
   els.error.hidden = true;
   const body = {
-    steps: parseInt(els.steps.value, 10),
-    seed: els.seed.value === "" ? null : parseInt(els.seed.value, 10),
+    steps: els.steps.value,
+    seed: els.seed.value === "" ? null : els.seed.value,
     backend: els.backend.value,
     model: els.modelPath.value || undefined,
     text_bundle: els.textBundlePath.value || undefined,
-    batch_count: parseInt(els.batchCount.value, 10) || 1,
-    text_cfg: els.textCfg.value === "" ? undefined : parseFloat(els.textCfg.value),
+    batch_count: els.batchCount.value,
+    text_cfg: els.textCfg.value === "" ? undefined : els.textCfg.value,
   };
   if (els.storyboardToggle.checked) {
     body.segments = collectSegments();
-    body.transition_frames = parseInt(els.transitionFrames.value, 10);
+    body.transition_frames = els.transitionFrames.value;
   } else {
     body.prompt = els.prompt.value;
-    body.frame_count = parseInt(els.frameCount.value, 10);
+    body.frame_count = els.frameCount.value;
     body.negative_prompt = els.negativePrompt.value || undefined;
   }
   if (animationKeyposes.size) body.keyposes = animationPoseDocument();
 
-  els.generateBtn.disabled = true;
-  els.cancelBtn.hidden = false;
-  els.progress.hidden = false;
+  submittingGeneration = true;
+  setGenerationBusy(true);
+  els.progress.textContent = "생성 요청을 준비하는 중...";
+  renderBatchResults([]);
 
   try {
     const res = await fetch("/api/generate", {
@@ -610,19 +657,23 @@ els.generateBtn.addEventListener("click", async () => {
       body: JSON.stringify(body),
     });
     const data = await res.json();
+    const metas = data.items || (data.id ? [data] : []);
+    renderBatchResults(metas, data.count || Number(body.batch_count));
+    if (metas.length) showResult(metas[0]);
+    if (data.status === "cancelled") {
+      els.batchSummary.textContent = `취소됨 · 완료한 ${metas.length}개 결과를 보존했습니다`;
+      if (!metas.length) { els.error.textContent = "생성이 취소되었습니다."; els.error.hidden = false; }
+    }
+    await refreshHistory();
     if (!res.ok) {
       throw new Error(data.error || `요청 실패 (${res.status})`);
     }
-    const metas = data.items || [data];
-    showResult(metas[0], metas.length > 1 ? `배치 ${metas.length}개 생성됨 — 히스토리에서 나머지 확인` : null);
-    await refreshHistory();
   } catch (e) {
     els.error.textContent = e.message;
     els.error.hidden = false;
   } finally {
-    els.generateBtn.disabled = false;
-    els.cancelBtn.hidden = true;
-    els.progress.hidden = true;
+    submittingGeneration = false;
+    await pollGenerationState();
     refreshStatus();
   }
 });
@@ -630,7 +681,7 @@ els.generateBtn.addEventListener("click", async () => {
 els.cancelBtn.addEventListener("click", async () => {
   els.cancelBtn.disabled = true;
   try {
-    await fetch("/api/cancel", { method: "POST" });
+    await fetch("/api/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
   } catch (e) {
     // 무시 — finally 블록의 상태 갱신이 곧 이어짐
   } finally {
@@ -650,12 +701,16 @@ els.animationPoseAdd.addEventListener("click", async () => {
     els.animationPoseStatus.textContent = "먼저 저장된 포즈를 선택하세요.";
     return;
   }
+  if (preset.skeleton !== "soma30") {
+    els.animationPoseStatus.textContent = "이전 포즈는 포즈 편집기에서 기준 캐릭터로 확인하고 다시 저장한 뒤 배치하세요.";
+    return;
+  }
   if (!Number.isInteger(frame) || frame < 0 || frame >= animationFrameCount()) {
     els.animationPoseStatus.textContent = `프레임은 0~${animationFrameCount() - 1} 범위여야 합니다.`;
     return;
   }
   const previous = animationKeyposes.get(frame);
-  animationKeyposes.set(frame, {frame, label: preset.name, controls: structuredClone(preset.controls)});
+  animationKeyposes.set(frame, {frame, label: preset.name, skeleton: preset.skeleton, controls: structuredClone(preset.controls)});
   renderAnimationPoses();
   try {
     await publishAnimationPoses();
@@ -755,7 +810,7 @@ async function initializePoseEditor() {
       poseStatus.textContent = "포징 편집기 모듈을 불러오는 중...";
       const { createKeyposeEditor } = await import("/static/keypose-editor.mjs");
       poseEditor = await createKeyposeEditor({
-        modelUrl: () => "/api/tpose?model=" + encodeURIComponent(selectedPreviewCharacter()),
+        modelUrl: () => "/api/tpose?model=capsule",
         onPresetsChanged: updateAnimationPosePresets,
       });
     } catch (error) {
@@ -800,3 +855,12 @@ loadMixamoModels();
 loadPresets();
 loadAnimationPosePresets();
 loadAnimationPoseState();
+pollGenerationState();
+setInterval(pollGenerationState, 1000);
+
+$("animation-pose-clear").addEventListener("click", async () => {
+  animationKeyposes.clear();
+  renderAnimationPoses();
+  try { await publishAnimationPoses(); }
+  catch (error) { els.animationPoseStatus.textContent = error.message; }
+});

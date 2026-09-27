@@ -37,8 +37,8 @@ POSITION_ONLY_CONTROL_IDS = {"left_elbow", "right_elbow", "left_knee", "right_kn
 ROTATION_PROPERTIES = {
         "position": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
         "rotation_xyzw": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
-        "space": {"type": "string", "enum": ["world", "character", "local"]},
-        "weight": {"type": "number", "minimum": 0, "maximum": 4},
+        "space": {"type": "string", "enum": ["world"]},
+        "weight": {"type": "number", "enum": [1]},
 }
 
 
@@ -333,6 +333,7 @@ def run_claude_pose_agent(instruction: str, pose: dict, snapshot: dict, *, diagn
     }
     prompt = f"""You are a character pose sub-agent. Modify a single-frame pose from the Korean or English instruction.
 Return only data matching the supplied JSON schema. Never add unknown control names.
+The editor uses the canonical SOMA30 skeleton. Emit world-space transforms and weight=1 only.
 The full snapshot contains current world-space transforms for reference. The current pose controls are the
 constraints already authored by the user. Preserve those constraints unless the instruction changes them,
 and return the complete desired constraint set. Apply the requested change at its stated magnitude instead
@@ -451,6 +452,7 @@ class PoseAgentDaemon:
             result = runner_result
             normalized = validate_pose_asset({
                 "schema_version": SCHEMA_VERSION,
+                "skeleton": pose.get("skeleton"),
                 "id": pose["id"],
                 "name": result.get("name") or pose["name"],
                 "controls": result.get("controls"),

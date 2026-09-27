@@ -570,6 +570,17 @@ details.advanced .field { margin-top: 8px; }
   font-size: 13px;
 }
 .download-link:hover { text-decoration: underline; }
+.download-link + .download-link { margin-left: 16px; }
+
+.batch-field { padding: 10px; border: 1px solid var(--border); border-radius: 7px; }
+.batch-results { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 8px; }
+.batch-results p { color: var(--text-dim); font-size: 13px; }
+.batch-candidates { display: flex; flex-wrap: wrap; gap: 8px; }
+.batch-candidates button {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  padding: 10px 12px; border-radius: 6px; cursor: pointer;
+}
+.batch-candidates button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
 .history { margin-top: 24px; }
 .history h2 { font-size: 15px; color: var(--text-dim); font-weight: 500; }

@@ -45,7 +45,7 @@ class PoseConstraint:
 
     position: tuple[float, float, float] | None = None
     rotation_xyzw: tuple[float, float, float, float] | None = None
-    space: str = "character"
+    space: str = "world"
     weight: float = 1.0
 
 
@@ -102,6 +102,7 @@ def get_keypose_schema() -> dict:
         "schema_version": SCHEMA_VERSION,
         "coordinate_system": dict(COORDINATE_SYSTEM),
         "spaces": ["world", "character", "local"],
+        "runtime": {"skeleton": "soma30", "spaces": ["world"], "weights": [0, 1]},
         "gizmo_modes": ["select", "move", "rotate"],
         "controls": deepcopy(CONTROLS),
         "structures": {
@@ -152,7 +153,7 @@ def _normalize_controls(controls: object, path: str = "controls") -> dict:
             result["rotation_xyzw"] = [component / norm for component in quat]
         if not result:
             raise KeyposeValidationError(f"{control_path} needs position or rotation_xyzw")
-        space = constraint.get("space", "character")
+        space = constraint.get("space", "world")
         if space not in ("world", "character", "local"):
             raise KeyposeValidationError(f"{control_path}.space is invalid")
         weight = constraint.get("weight", 1.0)
@@ -164,6 +165,14 @@ def _normalize_controls(controls: object, path: str = "controls") -> dict:
         result["weight"] = float(weight)
         normalized_controls[control_id] = result
     return normalized_controls
+
+
+def _pose_skeleton(value):
+    # Untagged saved poses remain readable, but must be reviewed in the canonical
+    # editor before generation. Do not silently relabel old character coordinates.
+    if value not in (None, "soma30"):
+        raise KeyposeValidationError("unsupported pose skeleton")
+    return value
 
 
 def validate_pose_asset(pose: dict, *, require_id: bool = True) -> dict:
@@ -230,6 +239,7 @@ def validate_pose_asset(pose: dict, *, require_id: bool = True) -> dict:
         raise KeyposeValidationError("pose asset revision must match the latest edit")
     return {
         "schema_version": SCHEMA_VERSION,
+        "skeleton": _pose_skeleton(pose.get("skeleton")),
         "id": pose_id.strip(),
         "name": name.strip(),
         "controls": _normalize_controls(pose.get("controls"), "pose.controls"),
@@ -255,6 +265,7 @@ def validate_pose_placement(placement: dict, frame_count: int | None = None) -> 
         raise KeyposeValidationError("pose placement pose_name must be a string of at most 80 characters")
     return {
         "frame": frame,
+        "skeleton": _pose_skeleton(placement.get("skeleton")),
         "pose_id": pose_id.strip(),
         "pose_name": pose_name,
         "controls": _normalize_controls(placement.get("controls"), "placement.controls"),
@@ -270,6 +281,7 @@ def placements_to_keypose_document(placements: list[dict], frame_count: int | No
         normalized = validate_pose_placement(placement, frame_count=frame_count)
         keyposes.append({
             "frame": normalized["frame"],
+            "skeleton": normalized["skeleton"],
             "label": normalized["pose_name"],
             "controls": normalized["controls"],
         })
@@ -316,7 +328,8 @@ def validate_keypose_document(document: dict, frame_count: int | None = None) ->
             raise KeyposeValidationError(f"{path}.label must be a string of at most 80 characters")
         normalized_controls = _normalize_controls(keypose.get("controls", {}), f"{path}.controls")
 
-        normalized["keyposes"].append({"frame": frame, "label": label, "controls": normalized_controls})
+        normalized["keyposes"].append({"frame": frame, "label": label, "controls": normalized_controls,
+                                      "skeleton": _pose_skeleton(keypose.get("skeleton", document.get("skeleton")))})
 
     normalized["keyposes"].sort(key=lambda item: item["frame"])
     return normalized

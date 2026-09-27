@@ -57,7 +57,8 @@
       <div class="field">
         <label>프레임 수 <span id="frame-count-val">120</span></label>
         <input type="range" id="frame-count-range" min="30" max="300" step="10" value="120">
-        <input type="number" id="frame-count" min="1" max="600" value="120">
+        <input type="number" id="frame-count" min="2" max="300" value="120">
+        <p class="hint">30fps · 프롬프트당 최대 10초. 긴 동작은 스토리보드로 나누세요.</p>
       </div>
     </div>
 
@@ -88,6 +89,7 @@
         <select id="animation-pose-preset"><option value="">저장된 포즈 선택...</option></select>
         <label>프레임 <input id="animation-pose-frame" type="number" min="0" max="119" value="0"></label>
         <button type="button" id="animation-pose-add">타임라인에 배치</button>
+        <button type="button" id="animation-pose-clear">트랙 비우기</button>
       </div>
       <div id="animation-pose-timeline" class="pose-track-bar"></div>
       <div id="animation-keyposes" class="animation-keyposes"></div>
@@ -136,12 +138,14 @@
       <p class="hint">생성 품질에는 영향을 주지 않으며, 결과 표시 캐릭터만 선택합니다.</p>
     </div>
 
+    <div class="field batch-field">
+      <label for="batch-count">생성 개수</label>
+      <input type="number" id="batch-count" min="1" max="8" value="1">
+      <p class="hint">같은 설정으로 최대 8개 후보를 만듭니다. Seed는 시작값부터 1씩 증가하며, 비우거나 -1이면 시작값을 무작위로 정합니다.</p>
+    </div>
+
     <details class="advanced">
       <summary>고급 옵션</summary>
-      <div class="field">
-        <label>배치 개수 (한 번에 N개 생성, 최대 8)</label>
-        <input type="number" id="batch-count" min="1" max="8" value="1">
-      </div>
       <div class="field">
         <label>프롬프트 강도 / CFG <span id="text-cfg-val">2.0</span></label>
         <input type="range" id="text-cfg-range" min="0" max="8" step="0.1" value="2.0">
@@ -181,7 +185,12 @@
     </div>
     <div id="viewer-caption" class="viewer-caption" hidden></div>
     <div id="info" class="info"></div>
-    <a id="download-link" class="download-link" hidden download>animation.glb 다운로드</a>
+    <a id="download-link" class="download-link" hidden download>모션 GLB 다운로드</a>
+    <a id="preview-download-link" class="download-link" hidden download>표시 캐릭터 GLB 다운로드</a>
+    <section id="batch-results" class="batch-results" hidden aria-label="생성 후보">
+      <p id="batch-summary" role="status"></p>
+      <div id="batch-candidates" class="batch-candidates"></div>
+    </section>
   </section>
 </main>
 
@@ -192,7 +201,7 @@
         <h2>단일 프레임 포즈</h2>
         <p>시간축 없이 한 자세만 만듭니다. 저장한 뒤 애니메이션 창의 포즈 트랙에 배치하세요.</p>
       </div>
-      <span class="context-badge">애니메이션 창의 미리보기 캐릭터 사용</span>
+      <span class="context-badge">생성 모델 기준 캐릭터</span>
     </div>
     <div id="posing-panel" class="posing-panel">
       <div class="posing-tools">
@@ -222,6 +231,7 @@
       </div>
       <div id="pose-controls" class="pose-controls"></div>
       <p id="pose-status" class="hint" role="status">캐릭터를 불러오는 중...</p>
+      <p class="hint">손발 위치는 골반 기준으로 적용되며, 골반을 직접 옮긴 경우에만 루트 위치가 고정됩니다. 결과의 표시 캐릭터는 애니메이션 창에서 선택하세요.</p>
     </div>
   </section>
 </main>
@@ -231,6 +241,6 @@
   <div id="history-list" class="history-list"></div>
 </section>
 
-<script src="/static/app.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

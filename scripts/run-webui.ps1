@@ -30,17 +30,23 @@ if ($CheckLauncher) {
     exit 0
 }
 
-Write-Host "[1/3] Releasing port 8188..."
-& (Join-Path $PSScriptRoot "prepare-webui-port.ps1") -Port 8188
+# Preflight first: a failing check must not cost the user a server that is still working.
+Write-Host "[1/3] Running preflight checks..."
+& $python "webui\server.py" --check
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to release port 8188. The new server was not started."
+    throw "WebUI preflight failed. Nothing was stopped or started."
 }
 
 Write-Host
-Write-Host "[2/3] Running preflight checks..."
-& $python "webui\server.py" --check
+Write-Host "[2/3] Checking port 8188..."
+& (Join-Path $PSScriptRoot "prepare-webui-port.ps1") -Port 8188
+if ($LASTEXITCODE -eq 3) {
+    Start-Process "http://127.0.0.1:8188/"
+    Write-Host "Opened the running WebUI in the browser."
+    exit 0
+}
 if ($LASTEXITCODE -ne 0) {
-    throw "WebUI preflight failed. The new server was not started."
+    throw "Port 8188 is not available. The new server was not started."
 }
 
 Write-Host

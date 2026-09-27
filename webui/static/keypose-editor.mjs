@@ -439,6 +439,7 @@ export async function createKeyposeEditor(options) {
     }
     return {
       label: labelInput.value,
+      skeleton: "soma30",
       controls,
       bone_state: cloneBoneState(bones),
     };
@@ -471,6 +472,14 @@ export async function createKeyposeEditor(options) {
   }
 
   function applyKeyposeInstant(keypose) {
+    for (const value of Object.values(keypose.controls)) {
+      if (value.weight === 0) continue;
+      if (value.space && value.space !== "world") throw new Error("이 포즈의 좌표 공간은 지원하지 않습니다. world 좌표의 포즈가 필요합니다.");
+      if (value.weight != null && value.weight !== 1) throw new Error("이 포즈의 가중치는 지원하지 않습니다. 0 또는 1을 사용하세요.");
+    }
+    keypose = {...keypose, controls: Object.fromEntries(
+      Object.entries(keypose.controls).filter(([, value]) => value.weight !== 0),
+    )};
     restoreBoneState(bones, restState);
     constrained.clear();
 
@@ -593,6 +602,7 @@ export async function createKeyposeEditor(options) {
           instruction,
           pose: {
             schema_version: schema.schema_version,
+            skeleton: "soma30",
             id: currentPoseRecord.id,
             name: current.label.trim() || "현재 포즈",
             controls: current.controls,
@@ -620,7 +630,7 @@ export async function createKeyposeEditor(options) {
     for (const pose of savedPoses) {
       const option = document.createElement("option");
       option.value = pose.name;
-      option.textContent = pose.name;
+      option.textContent = pose.name + (pose.skeleton === "soma30" ? "" : " · 기준 확인 필요");
       savedPoseSelect.appendChild(option);
     }
     options.onPresetsChanged?.(savedPoses);
@@ -638,6 +648,7 @@ export async function createKeyposeEditor(options) {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({pose: {
         schema_version: schema.schema_version,
+        skeleton: "soma30",
         id: currentPoseRecord.id || "",
         name,
         controls: keypose.controls,
@@ -659,8 +670,12 @@ export async function createKeyposeEditor(options) {
     currentPoseRecord = structuredClone(pose);
     renderAgentHistory();
     labelInput.value = pose.name;
-    applyKeypose(keypose);
-    status.textContent = `'${pose.name}' 포즈를 불러왔습니다. 이 포즈를 기준으로 필요한 부분만 수정합니다.`;
+    try {
+      applyKeypose(keypose);
+      status.textContent = pose.skeleton === "soma30"
+        ? `'${pose.name}' 포즈를 불러왔습니다. 이 포즈를 기준으로 필요한 부분만 수정합니다.`
+        : `이전 '${pose.name}'의 좌표를 기준 캐릭터에 표시했습니다. 자세를 확인·보정하고 다시 저장하세요.`;
+    } catch (error) { status.textContent = error.message; }
   });
 
   $("pose-preset-delete").addEventListener("click", async () => {
