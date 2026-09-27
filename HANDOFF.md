@@ -1,7 +1,7 @@
 # Test_KimodoMotion 작업 인수인계
 
-작성 기준: 2026-09-27 · **UE 마네킹(Quinn) 미리보기 추출 완성(A-포즈→T-포즈 변환, 렌더로 확인), Claude·Codex 공용 인수인계 도입** ·
-웹 UI·서버 코드는 바꾸지 않았다 · 2026-09-19 세션의 **미커밋 변경 14개 파일이 그대로 남아 있다**(아래 「작업 트리 상태」).
+작성 기준: 2026-09-27 · **UE 마네킹(Quinn) 미리보기 추출 완성(A-포즈→T-포즈 변환·텍스처 색, 웹 UI 에서 사용자 확인), Claude·Codex 공용
+인수인계 도입, 9/19 세션의 미커밋 작업까지 모두 커밋** · 작업 트리 깨끗함.
 
 이 파일은 Claude Code 와 Codex 가 같은 자리에서 이어받기 위한 **현재 상태의 정본**이다. 세션을 시작하면 이 파일부터
 읽고, 끝낼 때 「최신 인계」를 갱신한다(규칙은 맨 아래 「인계 규칙」). 결정의 상세 경위는 `history/` 에 있다.
@@ -19,20 +19,14 @@
 
 ### 작업 트리 상태 (2026-09-27 실측)
 
-- **미커밋 변경 14개 파일** — 2026-09-19 세션(공식 데모 병합·영구 진단 로그)의 작업이다: `.gitignore` · `AGENTS.md` ·
-  `history/2026-09-19_official-demo-feature-merge.md` · `history/2026-09-19_persistent-diagnostic-logs.md` · `run-webui.bat` ·
-  `scripts/pretty_export_glb.py` · `webui/config.json` · `webui/diagnostic_log.py` · `webui/server.py` · `webui/static/app.js` ·
-  `webui/static/index.html` · `webui/static/style.css` · `webui/tests/diagnostic_log_test.py`, 그리고 서브모듈 포인터
-  `vendor/kimodo.cpp`(`811eceb` → `5679ff1`). 커밋 여부는 사용자가 정한다 — 에이전트가 임의로 커밋하거나 되돌리지 않는다.
-- 9/19 세션의 추적 안 되는 파일: `history/2026-09-19_preview-character-playback.md` · `scripts/find-python.ps1`
-  (커밋할 대상으로 보인다 — 사용자 확인), 로그 `demo-server.stderr.log` · `demo-server.stdout.log`(ignore 대상 후보).
+- **미커밋 변경 없음.** 9/19 세션의 WebUI 작업은 `f41783e`(기능)·`99516b3`(테스트)로, 서브모듈 포인터 `vendor/kimodo.cpp` → `5679ff1`
+  (서브모듈 원격 `origin/main` 에 있음)은 `313e519` 로, 루트 서버 콘솔 로그 제외는 `7a90a0e` 로 커밋했다. 이번 차례의 마네킹·인계
+  작업은 `af4f2d9`. `webui/tests` Python 테스트 31개 통과(2026-09-27).
+- `vendor/kimodo.cpp` 안에 추적 안 되는 `demo-server.*.log` 가 있다(서브모듈 쪽 파일 — 루트에서 손대지 않았다).
 - **`KimodoTestbed/` 가 비어 있다.** `CLAUDE.md` 가 설명하는 `KimodoImportLibrary.*`(`RunIK`) · `Kimodo.ImportIK` 소스가 이
   경로에 없다. git 밖(로컬 전용)이라 복구는 사용자 백업뿐이다 — 리타겟 작업 전에 행방을 묻는다.
-- 이번 차례(2026-09-27)에 추가·수정한 것: `HANDOFF.md`(이 파일) · `history/2026-09-27_mannequin-apose-preview-report.md` ·
-  `assets/extract_mannequin_soma30.py`(신규) · `.gitignore`(`assets/mannequin_src/` 제외 한 줄) · `CLAUDE.md`·`AGENTS.md`(인계 절).
-  git 밖 산출물: `assets/mannequin_src/SKM_Quinn_Simple.FBX` · `T_Quinn_01_D.PNG` · `T_Quinn_02_D.PNG`(사용자가 NS 에서 내보냄, 색은 텍스처에서 샘플) →
-  `assets/mixamo_processed/quinn_simple_soma30_bind.json`. 이번 변경만 따로 커밋했다(`.gitignore`·`AGENTS.md` 는 이번 줄만 —
-  같은 파일의 9/19 변경은 작업 트리에 미커밋으로 남아 있다).
+- git 밖 산출물: `assets/mannequin_src/SKM_Quinn_Simple.FBX` · `T_Quinn_01_D.PNG` · `T_Quinn_02_D.PNG`(사용자가 NS 에서 내보냄) →
+  `assets/mixamo_processed/quinn_simple_soma30_bind.json`.
 
 ### 이번에 확정·정리한 것
 
@@ -49,14 +43,13 @@
 
 0. [주의] **추출을 다시 돌리면 웹 UI 미리보기 캐시를 지운다** — `webui/static/tpose_<id>.glb` 와 생성 결과 폴더의
    `preview_v2_<id>.glb` 는 파일이 있으면 다시 만들지 않는다(`server.py` 의 `ensure_tpose_variant`·`ensure_preview_variant`).
-   2026-09-27 에 색을 넣은 뒤에도 옛 회색 캐시가 보였다. 바인딩 파일 수정 시각으로 캐시를 무효화하는 수정은 `server.py` 의
-   미커밋 변경과 섞이지 않게 사용자 결정을 기다린다.
-1. (2026-09-27 사용자 확인: 웹 UI 에서 Quinn 애니메이션과 색 정상) 웹 UI 를 사용자가 다시 띄우면(프로세스는 사용자 승인 뒤에만) 결과 재생의 캐릭터 선택기에 `SKM_Quinn_Simple` 이 뜨는지,
-   재생이 렌더와 같은지 사용자와 확인한다. Manny 도 원하면 같은 스크립트에 `--fbx assets\mannequin_src\SKM_Manny_Simple.FBX`.
+   2026-09-27 에 색을 넣은 뒤에도 옛 회색 캐시가 보였다. 바인딩 파일 수정 시각으로 캐시를 무효화하도록 `server.py` 를
+   고칠지는 사용자 결정을 기다린다.
+1. 웹 UI 에서 Quinn 애니메이션과 색은 사용자가 확인했다(2026-09-27). Manny 도 원하면 NS 에서 `SKM_Manny_Simple` FBX 와
+   `T_Manny_01_D`·`T_Manny_02_D` 를 `assets/mannequin_src/` 에 내보낸 뒤 같은 스크립트에 `--fbx` 로 돌리고 캐시를 지운다.
 2. 사용자에게 두 가지를 확인한다 — ① 다음 범위(보고서 계획 2 리타겟 팔 꺾임 추천, 3 보법 프리셋, 4 루트 이동 보존),
    ② `KimodoTestbed` 소스의 행방(2번의 전제).
-3. 미커밋 14개 파일은 이 작업과 섞지 않는다 — 새 작업은 새 파일 위주로 하고, 커밋할 때 범위를 나눠 사용자에게 확인한다.
-4. WebUI·UE 에디터·Claude 데몬 같은 실행 중 프로세스는 시작·종료 전에 PID 와 함께 승인을 받는다(`AGENTS.md`
+3. WebUI·UE 에디터·Claude 데몬 같은 실행 중 프로세스는 시작·종료 전에 PID 와 함께 승인을 받는다(`AGENTS.md`
    「Runtime Process Consent」, 보이는 콘솔로만).
 
 ## 과거 상세 기록
