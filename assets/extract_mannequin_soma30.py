@@ -157,10 +157,15 @@ def load_slot_textures(mesh_obj):
         m = re.match(r"MI_(.+)$", name)
         found = None
         if m:
-            for ext in (".tga", ".TGA", ".png", ".PNG", ".jpg", ".bmp"):
-                cand = FBX_PATH.parent / f"T_{m.group(1)}_D{ext}"
-                if cand.exists():
-                    found = cand
+            # [DOC] Manny 의 인스턴스는 `MI_Manny_01_New` 인데 텍스처는 `T_Manny_01_D` 다 — `_New` 접미사를 뗀 이름도 찾는다.
+            stems = [m.group(1)] + ([m.group(1)[:-4]] if m.group(1).endswith("_New") else [])
+            for stem in stems:
+                for ext in (".tga", ".TGA", ".png", ".PNG", ".jpg", ".bmp"):
+                    cand = FBX_PATH.parent / f"T_{stem}_D{ext}"
+                    if cand.exists():
+                        found = cand
+                        break
+                if found:
                     break
         if found is None:
             print(f"슬롯 {name}: 디퓨즈 텍스처 없음 — 단색")
