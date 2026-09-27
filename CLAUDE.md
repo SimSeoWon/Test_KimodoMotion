@@ -184,6 +184,10 @@ Git Bash에서 UE5 콘텐츠 경로(`/Game/...`)를 다룰 때는 MSYS 경로 �
 - 포즈 편집기는 **표시 캐릭터와 저장 기준을 분리**한다. 저장·AI 스냅샷·불러오기·IK는 기준 리그(SOMA 캡슐)에서 하고, 선택한 캐릭터는
   로컬 회전과 골반 이동량만 복사해 보여준다(`keypose-editor.mjs`의 `syncRig`). 새 포즈 기능은 기준 리그 좌표로 읽고 써야 한다 —
   표시 리그의 월드 좌표는 뼈 길이만큼 다르다. 경위는 `history/2026-09-27_pose-editor-display-vs-canonical.md`.
+- 포즈 에이전트는 **해부학 각도 명령**으로 동작한다: LLM은 `webui/pose_ops.py`의 `OPS_SCHEMA`(관절 각도·골반/손발 이동·발 딛기)만 내고,
+  FK·IK·가동 범위·접지 검증은 `webui/pose_anatomy.py`가 한다(범위 표와 출처는 `webui/joint_limits.py`). LLM에게 쿼터니언·좌표 계산을 시키지 않는다 —
+  그게 한 요청 2분의 원인이었다. 축·부호는 FK 테스트(`pose_anatomy_test.py`)가 정본이다. 명령은 전부 적용 후 최종 자세만 검증한다(중간 검증은 교착을 부른다).
+  경위는 `history/2026-09-27_pose-anatomy-validator.md`.
 - 포즈 에이전트 모델은 최소 Sonnet을 사용한다. Haiku는 3D 좌표계, 쿼터니언 축, 상대 거리와
   실제 출력의 일관성을 안정적으로 처리하지 못했으므로 포즈 생성·수정에 사용하지 않는다.
   더 높은 모델은 허용하지만 `KIMODO_POSE_AGENT_MODEL`로 Sonnet 아래 모델을 지정해도 런타임이

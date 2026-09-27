@@ -553,6 +553,25 @@ export async function createKeyposeEditor(options) {
     return controls;
   }
 
+  // The anatomical agent returns the exact solved canonical skeleton. Show it
+  // as-is instead of re-solving the controls with the editor's IK, which would
+  // only approximate the joint angles Python validated.
+  function applyBoneStatePose(poseAsset, boneState, message) {
+    tweenFinalMessage = message || "";
+    const before = cloneBoneState(bones);
+    restoreBoneState(canonical.bones, boneState);
+    canonical.root.updateMatrixWorld(true);
+    syncCanonicalToDisplay();
+    constrained.clear();
+    for (const [controlId, value] of Object.entries(poseAsset.controls || {})) {
+      constrained.set(controlId, {position: !!value.position, rotation: !!value.rotation_xyzw});
+    }
+    const after = cloneBoneState(bones);
+    restoreBoneState(bones, before);
+    tweenQueue = [{before, after, duration: 450}];
+    advanceTweenQueue();
+  }
+
   function applyKeypose(keypose) {
     tweenToKeypose(() => applyKeyposeInstant(keypose));
   }
@@ -667,7 +686,8 @@ export async function createKeyposeEditor(options) {
       else if (state.status === "complete" && state.pose) {
         currentPoseRecord = structuredClone(state.pose);
         renderAgentHistory();
-        playKeyposeEdit(state.pose, state.summary || "수정된 포즈를 화면에 반영했습니다.");
+        if (state.bone_state) applyBoneStatePose(state.pose, state.bone_state, state.summary);
+        else playKeyposeEdit(state.pose, state.summary || "수정된 포즈를 화면에 반영했습니다.");
         labelInput.value = state.pose.name || labelInput.value;
         status.textContent = "AI가 수정한 포즈가 적용되었습니다. 기즈모로 이어서 보정할 수 있습니다.";
       }
@@ -700,7 +720,9 @@ export async function createKeyposeEditor(options) {
             revision: currentPoseRecord.revision || 0,
             edits: structuredClone(currentPoseRecord.edits || []),
           },
-          snapshot: makeFullSnapshot(),
+          // The full canonical skeleton lets the server measure every joint
+          // (the glenohumeral bone has no control of its own).
+          snapshot: {...makeFullSnapshot(), bone_state: cloneBoneState(canonical.bones)},
         }),
       });
       const state = await response.json();

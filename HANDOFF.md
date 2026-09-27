@@ -21,7 +21,8 @@
 - 취소·실패한 샘플은 출력 폴더를 지운다(`run_generation` → `remove_output_dir`, 라이브 확인). 상세 로그는 진단 로그에 남는다.
 - 미리보기·T포즈 캐시는 바인딩 JSON·내보내기 스크립트 2개의 크기·수정 시각 지문을 파일 이름에 넣는다(`preview_fingerprint`). 지문이 바뀌면 다시 만들고 같은 캐릭터의 옛 파일은 지운다. 응답은 `no-store`. 다른 캐릭터의 옛 파일(`tpose_ybot.glb` 등)은 그 캐릭터를 요청할 때 정리된다.
 - 포즈 편집기는 표시 캐릭터를 고를 수 있다(사용자 결정). 저장은 항상 SOMA 캡슐 기준이고, 반투명 캡슐로 실제 저장 자세를 겹쳐 보여준다 — [`history/2026-09-27_pose-editor-display-vs-canonical.md`](history/2026-09-27_pose-editor-display-vs-canonical.md).
-- 테스트: Python 53개, Node 3개 통과.
+- 포즈 에이전트를 해부학 각도 명령 + Python 검증으로 바꿨다(요청당 2분 → 5~9초) — [`history/2026-09-27_pose-anatomy-validator.md`](history/2026-09-27_pose-anatomy-validator.md). 떠 있는 서버는 재시작해야 반영된다.
+- 테스트: Python 78개, Node 3개 통과.
 - **알려진 한계(이번 변경과 무관):** 단일 프레임 손 위치 제약이 거의 반영되지 않는다(목표 1.7m, 결과 0.9m). 공식 후처리는 발 접촉 정보가 필요한데 `kmd-generate`가 출력하지 않는다.
 - 로컬 Claude in Chrome 확장은 다른 기기의 브라우저에 붙어 있어 `127.0.0.1:8188`에 닿지 않는다. 브라우저 검증은 이 PC의 Chrome을 CDP 헤드리스로 띄워 했다(스크립트는 세션 임시 폴더, 저장소 밖).
 
@@ -37,6 +38,7 @@
 1. 런처 동작이 바뀌었다: 다른 프로그램은 종료하지 않고, 이 WebUI일 때만 `[y/N]` 확인 후 자식까지 종료한다. `.codex-local/maps/process-map.md`의 옛 문구는 Codex가 다음에 갱신한다.
 2. 제약 품질: 공식 `nv-tlabs/kimodo`의 제약·후처리와 비교. 발 접촉 출력을 포크 `motion/main`에 추가할지는 사용자 결정.
 3. 남은 운영 개선(보고서 §3): 결과 GLB 오류 표시, README/구형 MCP 문서 정리.
+4. 포즈 검증 후속: 기즈모로 만든 포즈의 위반 경고를 편집기에 표시, 캐릭터별 유연성 설정 UI, 근거 약한 범위(체중 부하 배굴 45°·흉요추·쇄골·과신전 −5°) 보강, 필요 시 MCP 노출.
 
 ## 과거 상세 기록
 

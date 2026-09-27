@@ -41,10 +41,10 @@ try:
 except ModuleNotFoundError:
     from webui.keypose_agent import STORE as KEYPOSE_STORE
 try:
-    from pose_agent import POSE_AGENT, POSE_CLI_RUNTIME
+    from pose_agent import POSE_AGENT, POSE_CLI_RUNTIME, LEGACY_POSE_CLI_RUNTIME
     from diagnostic_log import DiagnosticRun, ProcessRunLog
 except ModuleNotFoundError:
-    from webui.pose_agent import POSE_AGENT, POSE_CLI_RUNTIME
+    from webui.pose_agent import POSE_AGENT, POSE_CLI_RUNTIME, LEGACY_POSE_CLI_RUNTIME
     from webui.diagnostic_log import DiagnosticRun, ProcessRunLog
 try:
     from generation_contract import normalize_generation_request, compile_keypose_constraints, motion_skeleton
@@ -1318,6 +1318,7 @@ def main():
     finally:
         PERSISTENT_GENERATOR.close()
         POSE_CLI_RUNTIME.stop()
+        LEGACY_POSE_CLI_RUNTIME.stop()
         server.server_close()
 
 

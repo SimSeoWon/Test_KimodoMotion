@@ -20,9 +20,11 @@ from typing import Callable
 try:
     from keypose import CONTROLS, SCHEMA_VERSION, KeyposeValidationError, validate_pose_asset
     from diagnostic_log import DiagnosticRun
+    import pose_ops
 except ModuleNotFoundError:
     from webui.keypose import CONTROLS, SCHEMA_VERSION, KeyposeValidationError, validate_pose_asset
     from webui.diagnostic_log import DiagnosticRun
+    from webui import pose_ops
 
 
 CONTROL_IDS = tuple(item["id"] for item in CONTROLS)
@@ -154,7 +156,9 @@ def _run_pose_cli(command: list[str], cwd: Path, *, attempt_timeout: int = 50) -
 class PoseCliRuntime:
     """One long-lived Claude CLI process fed with stream-json user turns."""
 
-    def __init__(self):
+    def __init__(self, schema: dict | None = None, effort: str | None = None):
+        self._schema = schema or POSE_RESULT_SCHEMA
+        self._effort = effort
         self._process = None
         self._events = queue.Queue()
         self._lifecycle_lock = threading.Lock()
@@ -174,7 +178,7 @@ class PoseCliRuntime:
                 "--input-format", "stream-json",
                 "--output-format", "stream-json",
                 "--verbose",
-                "--json-schema", json.dumps(POSE_RESULT_SCHEMA, separators=(",", ":")),
+                "--json-schema", json.dumps(self._schema, separators=(",", ":")),
                 "--tools", "",
                 "--permission-mode", "dontAsk",
                 "--no-session-persistence",
@@ -184,6 +188,8 @@ class PoseCliRuntime:
                 model = "sonnet"
             if model:
                 command.extend(["--model", model])
+            if self._effort:
+                command.extend(["--effort", self._effort])
             self._events = queue.Queue()
             self._process = subprocess.Popen(
                 command,
@@ -319,7 +325,25 @@ class PoseCliRuntime:
             )
 
 
-POSE_CLI_RUNTIME = PoseCliRuntime()
+# The anatomical path: the model returns clinical angles/metres and Python does
+# the kinematics, so low effort suffices (measured 2026-09-27: the quaternion
+# prompt took 38 s at low, 92 s at medium, 158 s at high effort).
+POSE_AGENT_EFFORT = os.environ.get("KIMODO_POSE_AGENT_EFFORT", "low").strip() or None
+POSE_CLI_RUNTIME = PoseCliRuntime(pose_ops.OPS_SCHEMA, effort=POSE_AGENT_EFFORT)
+# The previous quaternion-writing path, kept for callers without a bone state.
+LEGACY_POSE_CLI_RUNTIME = PoseCliRuntime()
+
+
+def run_anatomical_pose_agent(instruction: str, pose: dict, snapshot: dict, *,
+                              diagnostic: DiagnosticRun | None = None) -> dict:
+    def ask(prompt: str) -> dict:
+        return POSE_CLI_RUNTIME.request(prompt, diagnostic=diagnostic)
+
+    result = pose_ops.run(instruction, snapshot["bone_state"], pose.get("controls", {}), ask)
+    if diagnostic is not None:
+        diagnostic.event("anatomical_result", rounds=result["rounds"], operations=result["operations"],
+                         keep_planted=result["keep_planted"], warnings=result["warnings"])
+    return result
 
 
 def run_claude_pose_agent(instruction: str, pose: dict, snapshot: dict, *, diagnostic: DiagnosticRun | None = None) -> dict:
@@ -375,7 +399,7 @@ Current pose asset:
 Full control snapshot:
 {json.dumps(llm_snapshot, ensure_ascii=False, separators=(',', ':'))}
 """
-    return POSE_CLI_RUNTIME.request(prompt, diagnostic=diagnostic)
+    return LEGACY_POSE_CLI_RUNTIME.request(prompt, diagnostic=diagnostic)
 
 
 class PoseAgentDaemon:
@@ -441,7 +465,9 @@ class PoseAgentDaemon:
             self._state["status"] = "running"
             self._revision += 1
         try:
-            if self._runner is run_claude_pose_agent:
+            if self._runner is run_claude_pose_agent and isinstance(snapshot.get("bone_state"), dict):
+                runner_result = run_anatomical_pose_agent(instruction, pose, snapshot, diagnostic=diagnostic)
+            elif self._runner is run_claude_pose_agent:
                 runner_result = self._runner(instruction, pose, snapshot, diagnostic=diagnostic)
             else:
                 runner_result = self._runner(instruction, pose, snapshot)
@@ -490,6 +516,9 @@ class PoseAgentDaemon:
                     "status": "complete",
                     "summary": str(result.get("summary", ""))[:500],
                     "pose": normalized,
+                    # Exact canonical skeleton for the editor; controls stay the
+                    # engine-facing constraint set.
+                    "bone_state": result.get("bone_state"),
                     "error": None,
                 })
                 self._revision += 1
@@ -501,7 +530,7 @@ class PoseAgentDaemon:
                 traceback=traceback.format_exc(),
             )
             with self._lock:
-                self._state.update({"status": "failed", "error": str(exc), "pose": None})
+                self._state.update({"status": "failed", "error": str(exc), "pose": None, "bone_state": None})
                 self._revision += 1
 
 
