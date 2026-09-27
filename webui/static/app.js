@@ -571,18 +571,21 @@ async function loadMixamoModels() {
   try {
     const res = await fetch("/api/mixamo-models");
     const data = await res.json();
+    const poseCharacter = $("pose-character");
     els.mixamoModelGenerate.innerHTML = "";
     els.mixamoModelPlayback.innerHTML = "";
+    poseCharacter.innerHTML = "";
     for (const m of data.items || []) {
-      for (const select of [els.mixamoModelGenerate, els.mixamoModelPlayback]) {
+      for (const select of [els.mixamoModelGenerate, els.mixamoModelPlayback, poseCharacter]) {
         const opt = document.createElement("option");
         opt.value = m.id;
-        opt.textContent = m.label;
+        opt.textContent = select === poseCharacter && m.id === "capsule" ? `${m.label} · 저장 기준` : m.label;
         select.appendChild(opt);
       }
     }
     els.mixamoModelGenerate.value = data.default || "capsule";
     els.mixamoModelPlayback.value = data.default || "capsule";
+    if (!poseEditor) poseCharacter.value = data.default || "capsule";
     showTposePreview();
   } catch (e) {
     // 서버가 아직 안 떠있는 경우 등 — 조용히 무시
@@ -810,9 +813,13 @@ async function initializePoseEditor() {
       poseStatus.textContent = "포징 편집기 모듈을 불러오는 중...";
       const { createKeyposeEditor } = await import("/static/keypose-editor.mjs");
       poseEditor = await createKeyposeEditor({
-        modelUrl: () => "/api/tpose?model=capsule",
+        // Constraints are always authored on the canonical rig; the chosen
+        // character is display-only (W02).
+        canonicalUrl: "/api/tpose?model=capsule",
+        modelUrl: () => "/api/tpose?model=" + encodeURIComponent($("pose-character").value || "capsule"),
         onPresetsChanged: updateAnimationPosePresets,
       });
+      poseEditor.setCanonicalGhost($("pose-ghost").checked);
     } catch (error) {
       console.error("포징 편집기 초기화 실패", error);
       poseStatus.textContent = "포징 편집기 초기화 실패: " + error.message;
@@ -864,3 +871,20 @@ $("animation-pose-clear").addEventListener("click", async () => {
   try { await publishAnimationPoses(); }
   catch (error) { els.animationPoseStatus.textContent = error.message; }
 });
+
+$("pose-character").addEventListener("change", async (event) => {
+  if (!poseEditor) return;
+  const select = event.currentTarget;
+  select.disabled = true;
+  try {
+    await poseEditor.setDisplayCharacter("/api/tpose?model=" + encodeURIComponent(select.value));
+    $("pose-status").textContent = select.value === "capsule"
+      ? "저장 기준 캐릭터로 편집합니다."
+      : "표시 캐릭터를 바꿨습니다. 반투명 캡슐이 실제로 저장되는 자세입니다.";
+  } catch (error) {
+    $("pose-status").textContent = "캐릭터 전환 실패: " + error.message;
+  } finally {
+    select.disabled = false;
+  }
+});
+$("pose-ghost").addEventListener("change", (event) => poseEditor?.setCanonicalGhost(event.currentTarget.checked));

@@ -106,7 +106,11 @@ export async function createKeyposeEditor(options) {
   scene.add(ikTarget);
   transform.addEventListener("dragging-changed", (event) => { orbit.enabled = !event.value; });
 
-  const bones = new Map();
+  // `bones`, `restState` and `modelRoot` always name the *display* rig: the
+  // character the user sees and drags. Saved controls, loaded poses and the AI
+  // snapshot live on the canonical SOMA30 rig so the engine gets the same targets
+  // whatever character is on screen (W02).
+  let bones = new Map();
   const markers = new Map();
   const markerTargets = [];
   const constrained = new Map();
@@ -180,17 +184,94 @@ export async function createKeyposeEditor(options) {
     advanceTweenQueue();
   }
 
-  const gltf = await new GLTFLoader().loadAsync(options.modelUrl());
-  modelRoot = gltf.scene;
-  scene.add(modelRoot);
-  modelRoot.traverse((object) => {
-    if (object.isBone) bones.set(object.name, object);
-  });
-  restState = cloneBoneState(bones);
-  modelRoot.updateMatrixWorld(true);
+  const rigCache = new Map();
+  async function loadRig(url) {
+    if (rigCache.has(url)) return rigCache.get(url);
+    const gltf = await new GLTFLoader().loadAsync(url);
+    const rig = {url, root: gltf.scene, bones: new Map(), meshes: []};
+    rig.root.traverse((object) => {
+      if (object.isBone) rig.bones.set(object.name, object);
+      if (object.isMesh) rig.meshes.push({mesh: object, material: object.material});
+    });
+    rig.rest = cloneBoneState(rig.bones);
+    rig.root.updateMatrixWorld(true);
+    rig.heelOffsets = computeHeelOffsets(rig.bones);
+    rigCache.set(url, rig);
+    return rig;
+  }
+
+  // Every exported rig shares SOMA30 joint names and identity rest rotations; only
+  // bone lengths differ. Local rotations therefore transfer as-is, and the root
+  // carries over as a displacement from its own rest so a crouch stays a crouch.
+  // Descendant bones keep their own bind offsets, which is exactly why the same
+  // rotations can place a hand a few centimetres apart on two characters.
+  function syncRig(from, to) {
+    if (from === to) return;
+    for (const [name, bone] of from.bones) {
+      const target = to.bones.get(name);
+      const restFrom = from.rest[name]?.position;
+      const restTo = to.rest[name]?.position;
+      if (!target || !restFrom || !restTo) continue;
+      target.quaternion.copy(bone.quaternion);
+      target.position.set(
+        restTo[0] + bone.position.x - restFrom[0],
+        restTo[1] + bone.position.y - restFrom[1],
+        restTo[2] + bone.position.z - restFrom[2],
+      );
+    }
+    to.root.updateMatrixWorld(true);
+  }
+
+  const canonical = await loadRig(options.canonicalUrl);
+  let display = canonical;
+  scene.add(canonical.root);
+  bones = canonical.bones;
+  restState = canonical.rest;
+  modelRoot = canonical.root;
+  const syncDisplayToCanonical = () => syncRig(display, canonical);
+  const syncCanonicalToDisplay = () => syncRig(canonical, display);
+  let showCanonicalGhost = true;
+  const ghostMaterials = new Map();
+
+  function updateCanonicalAppearance() {
+    const ghost = display !== canonical;
+    canonical.root.visible = !ghost || showCanonicalGhost;
+    for (const {mesh, material} of canonical.meshes) {
+      if (!ghost) { mesh.material = material; continue; }
+      if (!ghostMaterials.has(material)) {
+        const faded = material.clone();
+        faded.transparent = true;
+        faded.opacity = 0.28;
+        faded.depthWrite = false;
+        ghostMaterials.set(material, faded);
+      }
+      mesh.material = ghostMaterials.get(material);
+    }
+  }
+
+  async function setDisplayCharacter(url) {
+    const next = await loadRig(url);
+    if (next === display) return;
+    syncDisplayToCanonical();
+    activeTween = null;
+    tweenQueue = [];
+    transform.detach();
+    if (display !== canonical) scene.remove(display.root);
+    display = next;
+    bones = display.bones;
+    restState = display.rest;
+    modelRoot = display.root;
+    if (display !== canonical) scene.add(display.root);
+    // syncRig overwrites every bone. Never reset to rest here: when the canonical
+    // capsule becomes the display rig, `bones` *is* the canonical pose.
+    syncCanonicalToDisplay();
+    updateCanonicalAppearance();
+    if (selected && mode !== "select") attachGizmo();
+  }
+
   const restTransforms = new Map();
   for (const definition of schema.controls) {
-    const bone = bones.get(definition.soma_joint);
+    const bone = canonical.bones.get(definition.soma_joint);
     if (!bone) continue;
     const position = new THREE.Vector3();
     const rotation = new THREE.Quaternion();
@@ -210,25 +291,29 @@ export async function createKeyposeEditor(options) {
   // derives a fixed heel point per foot from the bind pose -- ankle's X, toe's ground
   // height, mirrored the same distance behind the ankle that the toe sits in front of
   // it -- stored in the ankle bone's own local space so it travels rigidly under FK.
-  const heelOffsets = new Map();
-  for (const [footId, footJoint, toeJoint] of [
-    ["left_foot", "LeftFoot", "LeftToeBase"],
-    ["right_foot", "RightFoot", "RightToeBase"],
-  ]) {
-    const footBone = bones.get(footJoint);
-    const toeBone = bones.get(toeJoint);
-    if (!footBone || !toeBone) continue;
-    const ankleWorld = new THREE.Vector3();
-    const toeWorld = new THREE.Vector3();
-    footBone.getWorldPosition(ankleWorld);
-    toeBone.getWorldPosition(toeWorld);
-    const heelWorld = new THREE.Vector3(
-      ankleWorld.x, toeWorld.y, ankleWorld.z - (toeWorld.z - ankleWorld.z),
-    );
-    heelOffsets.set(footId, footBone.worldToLocal(heelWorld));
+  // Computed per rig at load time (rest pose), since each character's foot differs.
+  function computeHeelOffsets(rigBones) {
+    const offsets = new Map();
+    for (const [footId, footJoint, toeJoint] of [
+      ["left_foot", "LeftFoot", "LeftToeBase"],
+      ["right_foot", "RightFoot", "RightToeBase"],
+    ]) {
+      const footBone = rigBones.get(footJoint);
+      const toeBone = rigBones.get(toeJoint);
+      if (!footBone || !toeBone) continue;
+      const ankleWorld = new THREE.Vector3();
+      const toeWorld = new THREE.Vector3();
+      footBone.getWorldPosition(ankleWorld);
+      toeBone.getWorldPosition(toeWorld);
+      const heelWorld = new THREE.Vector3(
+        ankleWorld.x, toeWorld.y, ankleWorld.z - (toeWorld.z - ankleWorld.z),
+      );
+      offsets.set(footId, footBone.worldToLocal(heelWorld));
+    }
+    return offsets;
   }
   const heelMarkers = new Map();
-  for (const footId of heelOffsets.keys()) {
+  for (const footId of canonical.heelOffsets.keys()) {
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry(0.018, 10, 8),
       new THREE.MeshBasicMaterial({color: 0xff6b6b, depthTest: false}),
@@ -293,12 +378,12 @@ export async function createKeyposeEditor(options) {
     transform.setMode(mode);
   }
 
-  function solveIk(effector, target, depth) {
+  function solveIk(effector, target, depth, root = modelRoot) {
     const targetPosition = target.position;
     for (let iteration = 0; iteration < 8; iteration += 1) {
       let joint = effector.parent;
       for (let level = 0; level < depth && joint?.isBone; level += 1, joint = joint.parent) {
-        modelRoot.updateMatrixWorld(true);
+        root.updateMatrixWorld(true);
         const jointPosition = new THREE.Vector3();
         const effectorPosition = new THREE.Vector3();
         joint.getWorldPosition(jointPosition);
@@ -336,11 +421,11 @@ export async function createKeyposeEditor(options) {
     bone.updateMatrixWorld(true);
   }
 
-  function solveTwoBoneLeg(effector, target, poleTarget = null) {
+  function solveTwoBoneLeg(effector, target, poleTarget = null, root = modelRoot) {
     const lower = effector.parent;
     const upper = lower?.parent;
     if (!lower?.isBone || !upper?.isBone) return;
-    modelRoot.updateMatrixWorld(true);
+    root.updateMatrixWorld(true);
     const hip = new THREE.Vector3();
     const knee = new THREE.Vector3();
     const ankle = new THREE.Vector3();
@@ -355,7 +440,7 @@ export async function createKeyposeEditor(options) {
     if (direction.lengthSq() < 1e-8) return;
     // The knee pole controls forward bending. The solver keeps the ankle from
     // passing forward of the knee while preserving a natural lateral leg line.
-    const forward = new THREE.Vector3(0, 0, 1).transformDirection(modelRoot.matrixWorld);
+    const forward = new THREE.Vector3(0, 0, 1).transformDirection(root.matrixWorld);
     forward.addScaledVector(direction, -forward.dot(direction));
     let pole = forward;
     if (pole.lengthSq() < 1e-8) pole.set(1, 0, 0);
@@ -369,11 +454,11 @@ export async function createKeyposeEditor(options) {
     const reachableTarget = new THREE.Vector3().fromArray(solved.end);
 
     rotateBoneToward(upper, knee.clone().sub(hip), desiredKnee.clone().sub(hip));
-    modelRoot.updateMatrixWorld(true);
+    root.updateMatrixWorld(true);
     lower.getWorldPosition(knee);
     effector.getWorldPosition(ankle);
     rotateBoneToward(lower, ankle.clone().sub(knee), reachableTarget.clone().sub(knee));
-    modelRoot.updateMatrixWorld(true);
+    root.updateMatrixWorld(true);
   }
 
   transform.addEventListener("objectChange", () => {
@@ -424,10 +509,11 @@ export async function createKeyposeEditor(options) {
     status.textContent = "새 빈 포즈를 만들고 기본 자세로 초기화했습니다.";
   });
   function makePose() {
+    syncDisplayToCanonical();
     const controls = {};
     for (const [controlId, flags] of constrained) {
       const definition = schema.controls.find((item) => item.id === controlId);
-      const bone = bones.get(definition.soma_joint);
+      const bone = canonical.bones.get(definition.soma_joint);
       bone.updateWorldMatrix(true, false);
       const position = new THREE.Vector3();
       const rotation = new THREE.Quaternion();
@@ -441,15 +527,15 @@ export async function createKeyposeEditor(options) {
       label: labelInput.value,
       skeleton: "soma30",
       controls,
-      bone_state: cloneBoneState(bones),
+      bone_state: cloneBoneState(canonical.bones),
     };
   }
 
   function makeFullSnapshot() {
-    modelRoot.updateMatrixWorld(true);
+    syncDisplayToCanonical();
     const controls = {};
     for (const definition of schema.controls) {
-      const bone = bones.get(definition.soma_joint);
+      const bone = canonical.bones.get(definition.soma_joint);
       if (!bone) continue;
       const position = new THREE.Vector3();
       const rotation = new THREE.Quaternion();
@@ -480,7 +566,11 @@ export async function createKeyposeEditor(options) {
     keypose = {...keypose, controls: Object.fromEntries(
       Object.entries(keypose.controls).filter(([, value]) => value.weight !== 0),
     )};
-    restoreBoneState(bones, restState);
+    // Solve on the canonical rig -- the targets are canonical coordinates -- then
+    // show the result on whatever character is displayed.
+    const bones = canonical.bones;
+    const modelRoot = canonical.root;
+    restoreBoneState(bones, canonical.rest);
     constrained.clear();
 
     // Translation belongs only to the skeleton root. Every descendant keeps its
@@ -539,9 +629,9 @@ export async function createKeyposeEditor(options) {
         const kneeId = definition.id === "left_foot" ? "left_knee" : "right_knee";
         const kneePosition = keypose.controls[kneeId]?.position;
         const poleTarget = kneePosition ? new THREE.Vector3().fromArray(kneePosition) : null;
-        solveTwoBoneLeg(bone, target, poleTarget);
+        solveTwoBoneLeg(bone, target, poleTarget, modelRoot);
       }
-      else solveIk(bone, target, depth);
+      else solveIk(bone, target, depth, modelRoot);
       const flags = constrained.get(definition.id) || {position: false, rotation: false};
       flags.position = true;
       constrained.set(definition.id, flags);
@@ -560,6 +650,7 @@ export async function createKeyposeEditor(options) {
       applyWorldRotation(definition, value);
     }
     modelRoot.updateMatrixWorld(true);
+    syncCanonicalToDisplay();
   }
 
   async function pullPoseAgentState() {
@@ -769,17 +860,25 @@ export async function createKeyposeEditor(options) {
       const bone = bones.get(definition.soma_joint);
       if (marker && bone) bone.getWorldPosition(marker.position);
     }
-    for (const [footId, offset] of heelOffsets) {
+    for (const [footId, offset] of display.heelOffsets) {
       const marker = heelMarkers.get(footId);
       const bone = bones.get(footId === "left_foot" ? "LeftFoot" : "RightFoot");
       if (marker && bone) marker.position.copy(offset).applyMatrix4(bone.matrixWorld);
     }
     renderer.render(scene, camera);
   }
+  if (options.modelUrl && options.modelUrl() !== options.canonicalUrl) {
+    await setDisplayCharacter(options.modelUrl());
+  }
   animate();
   status.textContent = "부위를 선택하고 이동(W) 또는 회전(E) 기즈모로 조작하세요.";
 
   return {
+    setDisplayCharacter,
+    setCanonicalGhost(visible) {
+      showCanonicalGhost = visible;
+      updateCanonicalAppearance();
+    },
     getCurrentPose: () => {
       const {bone_state: ignored, ...pose} = makePose();
       return pose;

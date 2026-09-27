@@ -201,7 +201,11 @@
         <h2>단일 프레임 포즈</h2>
         <p>시간축 없이 한 자세만 만듭니다. 저장한 뒤 애니메이션 창의 포즈 트랙에 배치하세요.</p>
       </div>
-      <span class="context-badge">생성 모델 기준 캐릭터</span>
+      <div class="pose-character">
+        <label for="pose-character">표시 캐릭터</label>
+        <select id="pose-character"><option value="capsule">저폴리 캡슐 (저장 기준)</option></select>
+        <label class="pose-ghost-toggle"><input type="checkbox" id="pose-ghost" checked> 저장 기준 겹쳐 보기</label>
+      </div>
     </div>
     <div id="posing-panel" class="posing-panel">
       <div class="posing-tools">
@@ -231,7 +235,7 @@
       </div>
       <div id="pose-controls" class="pose-controls"></div>
       <p id="pose-status" class="hint" role="status">캐릭터를 불러오는 중...</p>
-      <p class="hint">손발 위치는 골반 기준으로 적용되며, 골반을 직접 옮긴 경우에만 루트 위치가 고정됩니다. 결과의 표시 캐릭터는 애니메이션 창에서 선택하세요.</p>
+      <p class="hint">포즈는 생성 모델의 기준 뼈대(SOMA 캡슐)로 저장됩니다. 다른 캐릭터로 편집하면 관절 회전은 그대로 옮겨지지만 뼈 길이 차이만큼 손발 위치가 몇 cm 달라질 수 있습니다 — 반투명 캡슐이 실제로 저장되는 자세입니다. 손발 위치는 골반 기준으로 적용되며, 골반을 직접 옮긴 경우에만 루트 위치가 고정됩니다.</p>
     </div>
   </section>
 </main>
