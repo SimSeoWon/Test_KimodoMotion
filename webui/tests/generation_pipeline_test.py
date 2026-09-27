@@ -52,6 +52,30 @@ class GenerationPipelineTest(unittest.TestCase):
         self.assertEqual([1, 2, 3], [m["batch_index"] for m in result["items"]])
         self.assertEqual(3, len(server.load_history()))
 
+    def test_cancelled_or_failed_sample_leaves_no_output_folder(self):
+        inferences = []
+
+        def run(command, **kwargs):
+            if command[0] == str(self.exe):
+                inferences.append(Path(kwargs["env"].get("KIMODO_CONSTRAINTS_FILE", "")))
+                if len(inferences) == 2:
+                    server.BATCH_STATE.request_cancel()
+                    raise server.GenerationCancelled("cancelled")
+                return subprocess.CompletedProcess(command, 0, "generated 120 frames", "")
+            Path(command[command.index("--output") + 1]).write_bytes(b"glb")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(server, "PERSISTENT_GENERATOR", Mock()), patch.object(server, "run_cancelable", side_effect=run):
+            result = server.run_generation_batch({**self.base, "negative_prompt": "running", "batch_count": 3})
+        self.assertEqual("cancelled", result["status"])
+        folders = sorted(path.name for path in (self.root / "results").iterdir())
+        self.assertEqual([result["items"][0]["id"]], folders)
+
+        failing = subprocess.CompletedProcess([str(self.exe)], 1, "", "boom")
+        with patch.object(server, "PERSISTENT_GENERATOR", Mock()), patch.object(server, "run_cancelable", return_value=failing):
+            self.assertEqual("failed", server.run_generation_batch({**self.base, "negative_prompt": "running"})["status"])
+        self.assertEqual(folders, sorted(path.name for path in (self.root / "results").iterdir()))
+
     def test_batch_only_changes_seed_and_stops_after_cancellation(self):
         calls = []
 

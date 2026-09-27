@@ -647,7 +647,7 @@ def ensure_preview_variant(generation_id: str, model_id: str) -> Path:
 FRAMES_STDOUT_RE = re.compile(r"generated (\d+) frames")
 
 
-def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
+def _run_generation(params: dict, diagnostic: DiagnosticRun, created_dirs: list) -> dict:
     check_generation_cancelled()
     params = normalize_generation_request(params)
 
@@ -719,6 +719,7 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
     gen_id = f"{ts.strftime('%Y%m%d-%H%M%S')}_{slugify(slug_source)}_{uuid.uuid4().hex[:12]}"
     out_dir = GENERATIONS_DIR / gen_id
     out_dir.mkdir(parents=True, exist_ok=False)
+    created_dirs.append(out_dir)
 
     env = os.environ.copy()
     env["PATH"] = f"{BUILD_BIN};{BUILD_REL};" + env.get("PATH", "")
@@ -863,8 +864,9 @@ def _run_generation(params: dict, diagnostic: DiagnosticRun) -> dict:
 def run_generation(params: dict) -> dict:
     diagnostic = DiagnosticRun("motion", {"params": params})
     started = time.monotonic()
+    created_dirs = []
     try:
-        result = _run_generation(params, diagnostic)
+        result = _run_generation(params, diagnostic, created_dirs)
         diagnostic.event("completed", elapsed_seconds=round(time.monotonic() - started, 3), meta=result)
         return result
     except Exception as exc:
@@ -874,7 +876,26 @@ def run_generation(params: dict) -> dict:
             error=str(exc),
             traceback=traceback.format_exc(),
         )
+        # A cancelled or failed sample has no history record; don't leave its
+        # half-written output folder behind. The diagnostic log keeps the details.
+        for out_dir in created_dirs:
+            remove_output_dir(out_dir, diagnostic)
         raise
+
+
+def remove_output_dir(out_dir: Path, diagnostic: DiagnosticRun) -> None:
+    # Windows can briefly keep a just-terminated child's file handles open.
+    for attempt in range(5):
+        try:
+            shutil.rmtree(out_dir)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if attempt == 4:
+                diagnostic.event("output_cleanup_failed", output_directory=str(out_dir), error=str(exc))
+                return
+            time.sleep(0.2)
 
 
 def run_generation_batch(params: dict) -> dict:

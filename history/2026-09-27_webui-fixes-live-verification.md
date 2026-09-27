@@ -64,3 +64,10 @@ CORS preflight를 강제당하고 서버는 허용하지 않는다). 유일하�
 - Python 49개, Node 3개 통과.
 - 라이브 검증으로 `output_motion/generations/`에 `20260927-11*` 테스트 결과 18개가 생겼다(git 밖). 사용자 요청으로 삭제했다. 그중 취소된 샘플 3개는 `meta.json` 없는 폴더만 남아 있었다 — 실패/취소 경로의 출력 폴더 정리가 후속 과제.
 - `.codex-local/maps/process-map.md`의 "Launcher may replace an existing server" 문구는 이제 "이 WebUI일 때만 확인 후"로 바뀌었다(Codex 로컬 문서라 손대지 않음).
+
+## 후속 — 취소·실패 샘플의 빈 출력 폴더 정리
+
+`_run_generation`이 만든 출력 폴더를 `run_generation`이 기억했다가, 예외(취소 포함)로 끝나면 지운다. 방금 종료된 자식이
+파일을 쥐고 있을 수 있어 0.2초 간격으로 5회 재시도하고, 끝내 실패하면 진단 로그에 `output_cleanup_failed`를 남긴다.
+테스트 `test_cancelled_or_failed_sample_leaves_no_output_folder`는 수정 전 코드에서 실패하는 것을 확인했다. 라이브: 3개 배치의 2번째
+추론 중 취소 → 폴더는 완료된 1개만 남음(`meta.json` 있음).
