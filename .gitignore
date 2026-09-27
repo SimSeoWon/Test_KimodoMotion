@@ -51,3 +51,7 @@ webui/logs/
 
 # Codex 로컬 운영 메모리 — 이 작업 사본에서만 사용하며 커밋하지 않는다.
 .codex-local/
+
+# 실행 스크립트가 루트에 남기는 서버 콘솔 로그 — 커밋 대상 아님.
+webui-server.*.log
+demo-server.*.log
