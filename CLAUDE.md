@@ -24,7 +24,9 @@ trivial한 것(오탈자, 변수명 변경)은 안 남겨도 된다.
 
 ## 구조
 
-- `vendor/kimodo.cpp/` — git submodule, kimodo.cpp 본체. 빌드 산출물(`build/`, `models/`,
+- `vendor/kimodo.cpp/` — git submodule, kimodo.cpp 본체. **원본(`origin`, localai-org)과 사용자 포크(`upstream`,
+  SimSeoWon)를 함께 문다 — WebUI 의 부정 프롬프트·키포즈 제약은 포크의 로컬 브랜치에만 있다.** 원격·브랜치·고정 규칙은
+  `README.md` 「kimodo.cpp 포크와 서브모듈」. 빌드 산출물(`build/`, `models/`,
   `generated/`)은 커밋 안 함.
 - `scripts/generate-motion.ps1` — 프롬프트 → `animation.glb` 원클릭.
 - `webui/` — 로컬 웹 UI (`py webui\server.py`, 표준 라이브러리만 사용). Stable Diffusion

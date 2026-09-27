@@ -19,14 +19,21 @@
 
 ### 작업 트리 상태 (2026-09-27 실측)
 
-- **미커밋 변경 없음.** 9/19 세션의 WebUI 작업은 `f41783e`(기능)·`99516b3`(테스트)로, 서브모듈 포인터 `vendor/kimodo.cpp` → `5679ff1`
-  (서브모듈 원격 `origin/main` 에 있음)은 `313e519` 로, 루트 서버 콘솔 로그 제외는 `7a90a0e` 로 커밋했다. 이번 차례의 마네킹·인계
+- **미커밋 변경 없음.** 9/19 세션의 WebUI 작업은 `f41783e`(기능)·`99516b3`(테스트)로, 서브모듈 포인터는 위 절대로 `811eceb` 로 되돌렸고, 루트 서버 콘솔 로그 제외는 `7a90a0e` 로 커밋했다. 이번 차례의 마네킹·인계
   작업은 `af4f2d9`. `webui/tests` Python 테스트 31개 통과(2026-09-27).
 - `vendor/kimodo.cpp` 안에 추적 안 되는 `demo-server.*.log` 가 있다(서브모듈 쪽 파일 — 루트에서 손대지 않았다).
 - **`KimodoTestbed/` 가 비어 있다.** `CLAUDE.md` 가 설명하는 `KimodoImportLibrary.*`(`RunIK`) · `Kimodo.ImportIK` 소스가 이
   경로에 없다. git 밖(로컬 전용)이라 복구는 사용자 백업뿐이다 — 리타겟 작업 전에 행방을 묻는다.
 - git 밖 산출물: `assets/mannequin_src/SKM_Quinn_Simple.FBX` · `T_Quinn_01_D.PNG` · `T_Quinn_02_D.PNG`(사용자가 NS 에서 내보냄) →
   `assets/mixamo_processed/quinn_simple_soma30_bind.json`.
+
+### 서브모듈 포인터 — 한 번 잘못 커밋했다가 되돌렸다 (2026-09-27)
+
+`313e519`(Claude 커밋)가 `vendor/kimodo.cpp` 를 `811eceb` → `5679ff1` 로 바꿨는데, `5679ff1` 은 `811eceb` 의 **부모**라 포크의
+로컬 커밋(부정 프롬프트 CFG·포즈 제약 — WebUI 가 쓰는 기능)을 빼는 커밋이었다. 9/19 세션이 서브모듈을 `main` 으로 체크아웃해 둔
+작업 트리를 조상 관계 확인 없이 커밋한 것이다. 사용자 결정으로 루트 커밋 하나로 되돌렸다 — 서브모듈을 포크 브랜치
+`local/negative-prompt-cfg-and-pose-constraints`(`811eceb`)로 체크아웃하고, 포인터를 `811eceb` 로, `.gitmodules` URL 을 포크로
+바꿨다(그 커밋은 포크에만 있다). 포크 쪽에는 새 커밋이 없다. 구조와 규칙은 `README.md` 「kimodo.cpp 포크와 서브모듈」.
 
 ### 이번에 확정·정리한 것
 
