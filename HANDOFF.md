@@ -52,6 +52,9 @@
 
 ### 다음 세션에서 할 일
 
+[중요] **NS 가 필요로 하는 애니메이션 목록과 조건은 [`docs/ns-animation-requests.md`](docs/ns-animation-requests.md)** — 공통 조건
+(스켈레톤·스탠스·반전·루트 이동·창 파지·이어 붙이기)과 항목별 우선순위·검수 기준. 첫 대상은 **F1 밀어걷기 전진 1보**(NS #692 S3).
+
 0. [주의] **추출을 다시 돌리면 웹 UI 미리보기 캐시를 지운다** — `webui/static/tpose_<id>.glb` 와 생성 결과 폴더의
    `preview_v2_<id>.glb` 는 파일이 있으면 다시 만들지 않는다(`server.py` 의 `ensure_tpose_variant`·`ensure_preview_variant`).
    2026-09-27 에 색을 넣은 뒤에도 옛 회색 캐시가 보였다. 바인딩 파일 수정 시각으로 캐시를 무효화하도록 `server.py` 를
