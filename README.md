@@ -49,31 +49,41 @@ cmake -S vendor\kimodo.cpp -B vendor\kimodo.cpp\build -G "Visual Studio 17 2022"
 cmake --build vendor\kimodo.cpp\build --config Release
 ```
 
-## kimodo.cpp 포크와 서브모듈 (2026-09-27 실측)
+## kimodo.cpp 포크와 서브모듈 (2026-09-27 정리)
 
-`vendor/kimodo.cpp`는 원본 저장소와 **사용자 포크**를 함께 물고 있다. 원격 이름이 관례와 반대라 헷갈리기 쉽다.
+`vendor/kimodo.cpp`는 **사용자 포크**를 서브모듈로 물고, 원본은 따라가기 위한 원격으로만 둔다.
 
 | 서브모듈 원격 | 저장소 | 역할 |
 |---|---|---|
-| `origin` | `https://github.com/localai-org/kimodo.cpp.git` | **원본**(C++/GGML 포팅판 배포처) |
-| `upstream` | `https://github.com/SimSeoWon/kimodo.cpp.git` | **사용자 포크**. 로컬 기능 브랜치를 여기에 push 한다. **루트 `.gitmodules` 의 URL 은 이쪽이다**(2026-09-27부터) |
+| `origin` | `https://github.com/SimSeoWon/kimodo.cpp.git` | **사용자 포크.** 루트 `.gitmodules` 의 URL 이고, 우리 브랜치를 여기에 push 한다 |
+| `upstream` | `https://github.com/localai-org/kimodo.cpp.git` | **원본**(C++/GGML 포팅판 배포처). 받기만 한다 |
 
-| 브랜치 | 커밋 | 내용 |
-|---|---|---|
-| `main` | `5679ff1` | 원본 `main` 과 같다(포크의 `main` 도 같은 커밋, 앞섬·뒤처짐 0) |
-| `local/negative-prompt-cfg-and-pose-constraints` | `811eceb` | `main` + 로컬 커밋 1개 — **부정 프롬프트 CFG, 엔드이펙터·전신 포즈 제약(WIP)**. 포크에만 있다. **루트가 고정하는 커밋** |
+새로 클론하면 `origin` 만 생긴다 — 원본을 따라가려면 서브모듈에서 한 번
+`git remote add upstream https://github.com/localai-org/kimodo.cpp.git` 를 한다.
 
-- **WebUI 가 쓰는 기능은 로컬 브랜치에만 있다.** `webui/server.py` 의 부정 프롬프트(`negative_prompt.txt`)와 키포즈 제약
-  (`keypose_constraints.tsv`)은 `811eceb` 의 `kmd-generate` 옵션을 쓴다. 지금 빌드된 `build/Release/kmd-generate.exe`
-  (2026-09-18 22:22)도 이 커밋으로 빌드됐다. `main` 으로 체크아웃하고 다시 빌드하면 두 기능이 빠진다.
-- **고정 커밋과 `.gitmodules` URL 을 맞춘다.** 루트가 `811eceb` 를 고정하면, 그 커밋은 포크에만 있으므로 `.gitmodules` 가
-  원본을 가리키는 한 다른 기계의 `git submodule update` 가 실패한다. 로컬 브랜치를 고정할 때는 URL 을 포크로 바꾼다.
-- **원본을 따라갈 때:** 서브모듈에서 `git fetch origin` → 로컬 브랜치를 `origin/main` 위로 rebase(루트 커밋 `ae479e0` 이 한 방식) →
-  빌드·테스트 → 포크(`upstream`)에 push → 루트에서 서브모듈 포인터를 커밋한다. 루트와 서브모듈 커밋은 나눈다(`AGENTS.md`).
-- [주의] 서브모듈을 `main` 으로 체크아웃한 채 루트에서 포인터를 커밋하지 않는다 — 2026-09-27 에 한 번 그렇게 커밋돼(`313e519`)
-  로컬 기능이 빠졌고 바로 되돌렸다. 포인터를 바꾸기 전에 새 커밋이 기존 고정 커밋의 **자손**인지 `git merge-base --is-ancestor` 로 본다.
-- 클론한 뒤에는 `git submodule update --init --recursive` 로 포크에서 `811eceb` 를 받는다. 서브모듈 안의 원격 이름(`origin` 원본 ·
-  `upstream` 포크)은 이미 만들어진 체크아웃의 설정이라, 새 클론에서는 `origin` 이 포크가 된다 — 원본을 따라가려면 원본을 원격으로 추가한다.
+| 포크 브랜치 | 역할 |
+|---|---|
+| `main` | 원본 `main` 의 거울. 여기에 직접 커밋하지 않는다(로컬 `main` 은 `upstream/main` 을 추적한다) |
+| **`motion/main`** | **통합 브랜치 — 이 리포가 쓰는 코드.** 루트는 이 브랜치의 커밋만 고정한다(`.gitmodules` 의 `branch = motion/main`) |
+| 기능 브랜치 | `motion/main` 에서 가지를 쳐 작업하고 `motion/main` 으로 합친다. 예전 `local/negative-prompt-cfg-and-pose-constraints` 는 `motion/main` 과 같은 커밋(`811eceb`)이라 기록용으로 남겨 둔다 |
+
+`motion/main`(2026-09-27 기준 `811eceb`)은 원본 `main`(`5679ff1`) + 로컬 커밋 1개 — **부정 프롬프트 CFG, 엔드이펙터·전신 포즈 제약(WIP)**
+이다. `webui/server.py` 의 부정 프롬프트(`negative_prompt.txt`)와 키포즈 제약(`keypose_constraints.tsv`)이 이 옵션을 쓰므로,
+`main` 으로 체크아웃해 빌드하면 두 기능이 빠진다. 빌드된 `build/Release/kmd-generate.exe`(2026-09-18)도 이 커밋으로 빌드됐다.
+
+**규칙**
+
+- **원본을 따라갈 때는 merge 한다.** 서브모듈에서 `git fetch upstream` → `git checkout motion/main` → `git merge upstream/main` →
+  빌드·`ctest` → `git push origin motion/main` → 루트에서 포인터 커밋. rebase 하면 예전 고정 커밋이 브랜치에서 빠져 포크에서 결국
+  지워지고, **예전 루트 커밋을 체크아웃할 때 서브모듈을 받을 수 없게 된다.** 꼭 rebase 해야 하면 먼저 옛 고정 커밋에 태그
+  (`pin/<날짜>`)를 붙여 포크에 push 한다. 포크 `main` 은 `upstream/main` 으로 fast-forward 만 한다.
+- **루트에서 포인터를 커밋하기 전에 확인한다** — ① 새 커밋이 `origin/motion/main` 에 있다
+  (`git -C vendor/kimodo.cpp branch -r --contains <커밋>`), ② 새 커밋이 기존 고정 커밋의 자손이다
+  (`git -C vendor/kimodo.cpp merge-base --is-ancestor <기존> <새것>`). 2026-09-27 에 서브모듈이 `main` 으로 체크아웃된 채 커밋돼
+  (`313e519`) 로컬 기능이 빠졌다가 되돌린 적이 있다.
+- 루트 커밋과 서브모듈 커밋은 나눈다(`AGENTS.md`). `git submodule sync` 는 서브모듈의 `origin` URL 을 `.gitmodules` 값으로 덮으므로,
+  원격 구성을 바꿀 때만 쓴다.
+- 범용적인 기능(예: 부정 프롬프트 CFG)은 원본에 PR 로 올리면 포크와 원본의 차이가 줄어든다(아직 안 함).
 
 ## 추론 백엔드: Vulkan (RTX 3080) — 단, 에디터가 켜져 있으면 무겁다
 

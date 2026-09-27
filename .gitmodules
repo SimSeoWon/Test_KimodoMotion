@@ -1,3 +1,4 @@
 [submodule "vendor/kimodo.cpp"]
 	path = vendor/kimodo.cpp
 	url = https://github.com/SimSeoWon/kimodo.cpp.git
+	branch = motion/main

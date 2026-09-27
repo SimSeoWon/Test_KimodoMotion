@@ -16,7 +16,7 @@ This repository turns text prompts into UE5-ready motion assets. `scripts/genera
 
 ## kimodo.cpp Fork
 
-`vendor/kimodo.cpp` tracks both the original repository (remote `origin`, localai-org) and the user's fork (remote `upstream`, SimSeoWon — also the root `.gitmodules` URL). The remote names are the reverse of the usual convention. The WebUI's negative-prompt CFG and keypose constraints exist only on the fork branch `local/negative-prompt-cfg-and-pose-constraints` (`811eceb`, `main` plus one commit); checking out `main` and rebuilding drops them. The root pins that branch commit and `.gitmodules` points at the fork. Before changing the submodule pointer, check that the new commit descends from the pinned one (`git merge-base --is-ancestor`). See `README.md` "kimodo.cpp 포크와 서브모듈" before changing the submodule pointer.
+`vendor/kimodo.cpp` points at the user's fork (remote `origin`, SimSeoWon — the root `.gitmodules` URL); the original repository is remote `upstream` (localai-org), used only for fetching. The root pins commits from the fork's integration branch `motion/main` (`.gitmodules` `branch = motion/main`), which is the original `main` plus local features (negative-prompt CFG, keypose constraints) that the WebUI depends on; checking out `main` and rebuilding drops them. The fork's `main` only mirrors `upstream/main`. Follow the original by merging `upstream/main` into `motion/main` (not rebasing — rebasing orphans previously pinned commits). Before committing a new submodule pointer, verify it is contained in `origin/motion/main` and descends from the currently pinned commit (`git merge-base --is-ancestor`). Details: `README.md` "kimodo.cpp 포크와 서브모듈".
 
 ## Build, Test, and Development Commands
 
