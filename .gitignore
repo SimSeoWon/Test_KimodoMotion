@@ -29,6 +29,10 @@ KimodoTestbed/
 assets/mixamo_src/
 assets/mixamo_processed/
 
+# UE 마네킹 원본 FBX — 에픽 콘텐츠라 저장소에 올리지 않는다. NS 에디터에서 사용자가 직접 내보낸다(2026-09-27).
+# 가공 결과는 웹 UI 가 읽는 assets/mixamo_processed/ 에 쓰므로 위 규칙으로 함께 제외된다.
+assets/mannequin_src/
+
 # webui/server.py가 실행 중에 캐릭터별로 만드는 T포즈 미리보기 — 재생성 가능, 커밋 대상 아님.
 webui/_tpose_src/
 webui/static/tpose_*.glb

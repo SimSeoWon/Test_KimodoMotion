@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Session Handoff (Codex · Claude Code)
+
+Read the root `HANDOFF.md` first in every session, before `history/`. It is the shared, committed source of truth for the current state when Codex and Claude Code take turns on this repository: working-tree status, pending user decisions, and the next concrete tasks. Re-check the working tree with `git status` instead of trusting the recorded state, since the other agent may have changed it. When you finish work the user has confirmed, or after an important decision, record the rationale in `history/YYYY-MM-DD_topic.md` and rewrite the "최신 인계" section of `HANDOFF.md` to describe the current state (do not append; move the previous body to `docs/handoff/archive/HANDOFF_<date>.md`). Anything both agents must know belongs in `HANDOFF.md` or `history/`, not in `.codex-local/` or `.claude/`.
+
 ## Project Structure & Module Organization
 
 This repository turns text prompts into UE5-ready motion assets. `scripts/generate-motion.ps1` orchestrates inference and GLB export. The pinned `vendor/kimodo.cpp/` submodule contains the C++23/GGML runtime: public headers in `include/`, implementation in `src/`, tests in `tests/`, converters in `scripts/`, and bundled GGML sources in `ggml/`. `KimodoTestbed/` is an ignored, local UE5.8 sandbox; do not treat it as deliverable source. Generated weights, build trees, `prompt.txt`, and `output_motion/` are intentionally untracked. Read the newest note in `history/` before substantial work and add a dated `YYYY-MM-DD_topic.md` note after important decisions.
