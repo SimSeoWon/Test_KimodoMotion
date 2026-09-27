@@ -67,7 +67,7 @@ cmake --build vendor\kimodo.cpp\build --config Release
 | **`motion/main`** | **통합 브랜치 — 이 리포가 쓰는 코드.** 루트는 이 브랜치의 커밋만 고정한다(`.gitmodules` 의 `branch = motion/main`) |
 | 기능 브랜치 | `motion/main` 에서 가지를 쳐 작업하고 `motion/main` 으로 합친다. 예전 `local/negative-prompt-cfg-and-pose-constraints` 는 `motion/main` 과 같은 커밋(`811eceb`)이라 기록용으로 남겨 둔다 |
 
-`motion/main`(2026-09-27 기준 `811eceb`)은 원본 `main`(`5679ff1`) + 로컬 커밋 1개 — **부정 프롬프트 CFG, 엔드이펙터·전신 포즈 제약(WIP)**
+`motion/main`(2026-09-27 기준 `88cbfbc`)은 원본 `main`(`5679ff1`) + 로컬 기능 커밋 `811eceb` + 로그 무시 커밋 — **부정 프롬프트 CFG, 엔드이펙터·전신 포즈 제약(WIP)**
 이다. `webui/server.py` 의 부정 프롬프트(`negative_prompt.txt`)와 키포즈 제약(`keypose_constraints.tsv`)이 이 옵션을 쓰므로,
 `main` 으로 체크아웃해 빌드하면 두 기능이 빠진다. 빌드된 `build/Release/kmd-generate.exe`(2026-09-18)도 이 커밋으로 빌드됐다.
 
