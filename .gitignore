@@ -55,3 +55,6 @@ webui/logs/
 # 실행 스크립트가 루트에 남기는 서버 콘솔 로그 — 커밋 대상 아님.
 webui-server.*.log
 demo-server.*.log
+
+# scripts/follow-upstream.ps1 run logs
+/logs/

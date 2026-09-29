@@ -71,6 +71,19 @@ cmake --build vendor\kimodo.cpp\build --config Release
 이다. `webui/server.py` 의 부정 프롬프트(`negative_prompt.txt`)와 키포즈 제약(`keypose_constraints.tsv`)이 이 옵션을 쓰므로,
 `main` 으로 체크아웃해 빌드하면 두 기능이 빠진다. 빌드된 `build/Release/kmd-generate.exe`(2026-09-18)도 이 커밋으로 빌드됐다.
 
+**따라가기는 스크립트로 한다** (2026-09-30) — 아래 규칙을 순서대로 집행하고, 어긋나면 거절한다.
+병합 충돌은 자동으로 풀지 않고 사람에게 넘긴다. 에이전트 입구는 스킬 `kimodo-follow-upstream`.
+
+```powershell
+.\scripts\follow-upstream.ps1 -DryRun   # 들어올 커밋만 보여 준다 (아무것도 안 바꾼다)
+.\scripts\follow-upstream.ps1           # merge → 빌드·ctest → push → 포인터 검사 → 루트 포인터 커밋
+```
+
+종료 코드: 0 완료·이미 최신 · 2 전제 거절 · 3 병합 충돌(해결·커밋 뒤 다시 실행하면 이어서 한다) ·
+4 빌드·테스트 실패(push 안 됨) · 1 기타. 루트 push 는 하지 않는다. 로그는 `logs\follow-upstream\`.
+빌드는 테스트를 켜서 한다(`-DKIMODO_BUILD_TESTS=ON` — 테스트 0개 실행은 통과로 치지 않는다).
+검증: `scripts\tests\follow_upstream_test.ps1`(임시 샌드박스에서 실제 git, cmake/ctest 는 대역).
+
 **규칙**
 
 - **원본을 따라갈 때는 merge 한다.** 서브모듈에서 `git fetch upstream` → `git checkout motion/main` → `git merge upstream/main` →
