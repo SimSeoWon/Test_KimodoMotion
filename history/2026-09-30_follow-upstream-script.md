@@ -40,9 +40,17 @@ AX 일감 `#694`(Redmine `kimodo` 프로젝트). README 「kimodo.cpp 포크와 
 처음 돌렸을 때 잡힌 것 둘: 문자열 안 `$Branch:` 를 PowerShell 이 드라이브 범위 변수로 읽어 **스크립트가 파싱부터
 실패**했다(→ `${Branch}:`), 하네스의 `-D` 가 함수 매개변수 `-Dir` 의 접두 일치로 먹혔다.
 
+## 실물 실행 (.33 Gitea 클론, 01:30)
+
+`git pull --ff-only`(작업 트리 깨끗 확인 뒤) → `git submodule update --init --recursive`(`kimodo.cpp` `88cbfbc` ·
+`ggml` `8c63e70`) → `-DryRun`: `upstream` 원격을 추가하고 fetch, *"motion/main already contains upstream/main"* →
+실행: 분리 상태를 `motion/main`(origin 추적)으로 옮기고 *"Already up to date"* exit 0. 루트 `git status` 빈 출력.
+원본 `upstream/main` 은 `5679ff1` 그대로 — **지금은 따라갈 것이 없다.** 드라이런 설명을 「아무것도 안 바꾼다」에서
+「브랜치·커밋은 안 바꾼다(원격이 없으면 추가하고 fetch)」로 고쳤다 — 실측이 그 문구를 반증했다.
+
 ## 남은 것
 
-- **실물 첫 실행은 아직이다.** Gitea 클론은 서브모듈이 초기화돼 있지 않아 한 번
+- **빌드·테스트 경로는 실물로 아직 안 돌았다**(원본이 움직여야 돈다). Gitea 클론은 서브모듈이 초기화돼 있지 않아 한 번
   `git submodule update --init --recursive` 와 테스트를 켠 전체 빌드가 필요하다. 모델 번들·패리티 픽스처가 필요한
   테스트는 자동으로 받지 않으므로 **지금의 `ctest` 기준선이 전부 통과하는지부터** 재야 한다 — 이미 실패하는 테스트가
   있으면 스크립트가 매번 거기서 멈춘다(그때 `-CtestArgs -E <regex>` 를 쓸지는 사용자 결정).

@@ -23,17 +23,19 @@
 - 서브모듈 포크(`SimSeoWon/kimodo.cpp`, GitHub)는 그대로다. 스크립트가 push 하는 곳은 포크의 `motion/main` 이고, 루트 push 는 사람이 한다.
 - 스크립트는 `KIMODO_BUILD_TESTS=ON` 으로 빌드한다. 테스트 0개 실행은 실패로 친다.
 
-### 실측 상태 (2026-09-30)
+### 실측 상태 (2026-09-30 01:30)
 
 - `main` = `origin/main`(Gitea) = 이 인계 커밋. 서브모듈 고정 `88cbfbc` 변경 없음.
-- `.33` Gitea 클론: **서브모듈 미초기화 · 빌드 없음**. 원래 클론은 `motion/main` `88cbfbc` · `upstream` 원격 있음 · 빌드 있음(테스트 OFF).
+- `.33` Gitea 클론: 서브모듈 초기화 완료(`kimodo.cpp` `88cbfbc` · `ggml` `8c63e70` v0.20.2) · `upstream` 원격 추가(스크립트) ·
+  서브모듈은 `motion/main`(origin 추적) · **빌드 없음**. 원래 클론 `Test_KimodoMotion` 은 손대지 않았다.
+- 실물 실행: `-DryRun` → *"motion/main already contains upstream/main"* · 실행 → *"Already up to date"* exit 0 (빌드 전에 끝남).
+  **원본 `upstream/main` 은 아직 `5679ff1` 이다(09-27 과 같다) — 지금 따라갈 것이 없다.**
 
 ### 다음 작업
 
-1. **실물 첫 실행 (사용자 승인 필요 — `.33` 자원을 쓴다):** Gitea 클론에서 `git submodule update --init --recursive` →
-   `follow-upstream.ps1 -DryRun`(들어올 커밋 확인) → 실행. 테스트를 켠 첫 전체 빌드라 오래 걸린다.
-   모델 번들·패리티 픽스처가 필요한 테스트가 지금 통과하는지 모른다 — 실패하면 스크립트가 exit 4 로 멈추고,
-   `-CtestArgs -E <regex>` 로 뺄지는 사용자 결정이다.
+1. **원본이 움직이면 그때 처음으로 빌드·테스트까지 돈다.** 테스트를 켠 첫 전체 빌드라 오래 걸리고(`.33` 자원),
+   모델 번들·패리티 픽스처가 필요한 테스트가 통과하는지 **아직 모른다** — 실패하면 스크립트가 exit 4 로 멈춘다.
+   미리 재 둘지(기준선 빌드 1회), `-CtestArgs -E <regex>` 로 뺄지는 사용자 결정.
 2. `CLAUDE.md` 「빌드 / 실행 명령」의 `-DKIMODO_BUILD_TESTS=OFF` 와 AGENTS.md 의 ON 이 다르다 — 맞출지 사용자 결정.
 3. 이전 인계의 다음 작업(포즈 검증 후속 · 키포즈 반영 품질 · 운영 개선 · Codex 프로세스 맵 문구)은 그대로 열려 있다 —
    [`docs/handoff/archive/HANDOFF_2026-09-28_pose-editor.md`](docs/handoff/archive/HANDOFF_2026-09-28_pose-editor.md).

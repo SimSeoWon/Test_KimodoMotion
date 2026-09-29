@@ -75,7 +75,7 @@ cmake --build vendor\kimodo.cpp\build --config Release
 병합 충돌은 자동으로 풀지 않고 사람에게 넘긴다. 에이전트 입구는 스킬 `kimodo-follow-upstream`.
 
 ```powershell
-.\scripts\follow-upstream.ps1 -DryRun   # 들어올 커밋만 보여 준다 (아무것도 안 바꾼다)
+.\scripts\follow-upstream.ps1 -DryRun   # 들어올 커밋만 보여 준다 (브랜치·커밋은 안 바꾼다 — upstream 원격이 없으면 추가하고 fetch 만 한다)
 .\scripts\follow-upstream.ps1           # merge → 빌드·ctest → push → 포인터 검사 → 루트 포인터 커밋
 ```
 

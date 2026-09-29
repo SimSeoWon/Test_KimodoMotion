@@ -1,5 +1,6 @@
 param(
-    # Fetch and report what upstream/main would bring into motion/main. Changes nothing.
+    # Fetch and report what upstream/main would bring into motion/main. Changes no branch or commit
+    # (it only adds the "upstream" remote if missing - the README one-time step - and fetches).
     [switch]$DryRun,
     # CMake build tree for the submodule. Default: vendor\kimodo.cpp\build
     [string]$BuildDir = "",
@@ -125,7 +126,7 @@ if ($DryRun) {
     Write-Log "Dry run: upstream/main would bring these commits into $Branch ($(Short $base)):"
     $incoming -split "`n" | ForEach-Object { Write-Log "  $_" }
     Write-Log ("  " + (Get-Git $sub @("diff", "--shortstat", "$base...$upstream")))
-    Stop-With 0 "Dry run: nothing was changed."
+    Stop-With 0 "Dry run: no branch or commit was changed."
 }
 
 $current = Get-Git $sub @("symbolic-ref", "-q", "--short", "HEAD")

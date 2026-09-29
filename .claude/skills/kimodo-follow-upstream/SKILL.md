@@ -8,7 +8,7 @@ description: vendor/kimodo.cpp 를 원본(localai-org/kimodo.cpp main) 최신으
 절차는 **스크립트가 집행한다** — 손으로 단계를 밟지 않는다. 규칙의 정본은 `README.md`
 「kimodo.cpp 포크와 서브모듈」이고, 스크립트는 그 순서를 지키며 어긋나면 **거절**한다.
 
-1. 먼저 드라이런으로 무엇이 들어오는지 보여 준다 (아무것도 안 바꾼다):
+1. 먼저 드라이런으로 무엇이 들어오는지 보여 준다 (브랜치·커밋은 안 바꾼다 — `upstream` 원격이 없으면 추가하고 fetch 만 한다):
 
        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\follow-upstream.ps1 -DryRun
 
