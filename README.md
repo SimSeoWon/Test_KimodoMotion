@@ -84,6 +84,13 @@ cmake --build vendor\kimodo.cpp\build --config Release
 빌드는 테스트를 켜서 한다(`-DKIMODO_BUILD_TESTS=ON` — 테스트 0개 실행은 통과로 치지 않는다).
 검증: `scripts\tests\follow_upstream_test.ps1`(임시 샌드박스에서 실제 git, cmake/ctest 는 대역).
 
+**테스트 기준선** (2026-09-30 실측): ctest 16건 중 **5건**만 돈다 — 나머지 11건은 저장소에 없는 입력
+(`models/kimodo-smplx-rp-v1-f32.gguf` 는 로컬 변환 전용 · llm2vec 번들 + `fixtures/`)이 필요해 기본 `-CtestArgs` 가 뺀다.
+대신 ctest 뒤에 **이 프로젝트가 실제로 쓰는 SOMA 모델로 생성 스모크**(`kimodo-generate-smoke`, 30 관절)를 한 번 돌린다.
+모델은 커밋되지 않으므로 **처음 한 번 `vendor\kimodo.cpp\models\kimodo-soma-rp-v1.1-f32.gguf` 에 둔다**
+(다른 경로면 `-SmokeModel <path>`). 없으면 스크립트가 아무것도 바꾸기 전에 거절한다(exit 2).
+`-CtestArgs @()` 는 16건 전부를 돌린다.
+
 **규칙**
 
 - **원본을 따라갈 때는 merge 한다.** 서브모듈에서 `git fetch upstream` → `git checkout motion/main` → `git merge upstream/main` →

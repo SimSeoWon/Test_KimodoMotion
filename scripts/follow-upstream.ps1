@@ -4,15 +4,23 @@ param(
     [switch]$DryRun,
     # CMake build tree for the submodule. Default: vendor\kimodo.cpp\build
     [string]$BuildDir = "",
-    # Extra ctest arguments (e.g. -E <regex>). Use only once the test baseline is known.
-    [string[]]$CtestArgs = @()
+    # ctest arguments. The default excludes the 11 tests whose inputs are not in the repository
+    # (measured 2026-09-30, AX #694): kimodo-smplx-rp-v1-f32.gguf is local-conversion only
+    # (8 tests), llm2vec bundle + fixtures/llm2vec-real-prompt (2), fixtures/smplx-zero-embedding (1).
+    # Passing -CtestArgs replaces the default; -CtestArgs @() runs all 16.
+    [string[]]$CtestArgs = @("-E", "^kimodo-(llm-text-session-(cpu|vulkan)|root-parity|body-parity|fixture-sampler-parity|ggml-weights-test|denoiser-runtime-(root|body|full)|decode-test|generate-smoke)$"),
+    # Model for the generate smoke run after ctest - the model this project actually uses.
+    # Default: vendor\kimodo.cpp\models\kimodo-soma-rp-v1.1-f32.gguf. Missing = refused, never skipped.
+    [string]$SmokeModel = "",
+    # Joint count the smoke run must get back (SOMA = 30; kimodo-generate-smoke defaults to 22 = SMPL-X).
+    [int]$SmokeJoints = 30
 )
 
 # Follow the original kimodo.cpp (localai-org, remote "upstream") into the fork's
 # integration branch motion/main, then re-pin the submodule in the root repo.
 # Enforces README "kimodo.cpp fork and submodule" in order, and refuses instead of guessing:
 #   1. fetch upstream -> checkout motion/main -> merge upstream/main   (merge, never rebase)
-#   2. build + ctest                                                     (stop on failure)
+#   2. build + ctest + generate smoke on the SOMA model                  (stop on failure)
 #   3. git push origin motion/main
 #   4. check the new commit is on origin/motion/main and descends from the current pin
 #   5. commit the new submodule pointer in the root repo                 (root push is left to you)
@@ -33,6 +41,7 @@ if (-not $root) { Write-Host "Not inside the repository."; exit 1 }
 $root = $root.Trim()
 $sub = Join-Path $root $SubPath
 if (-not $BuildDir) { $BuildDir = Join-Path $sub "build" }
+if (-not $SmokeModel) { $SmokeModel = Join-Path $sub "models\kimodo-soma-rp-v1.1-f32.gguf" }
 
 $logDir = Join-Path $root "logs\follow-upstream"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -100,6 +109,11 @@ $running = @(Get-Process -Name "kmd-generate" -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0 -and -not $DryRun) {
     # Building replaces kmd-generate.exe. Never stop a user process - ask the user to finish it.
     Stop-With 2 ("kmd-generate is running (PID " + (($running | ForEach-Object { $_.Id }) -join ", ") + "). Let it finish or stop it yourself, then re-run.")
+}
+
+# Checked before anything moves, so a missing model never leaves a half-done merge behind.
+if (-not $DryRun -and -not (Test-Path -PathType Leaf $SmokeModel)) {
+    Stop-With 2 "Smoke model not found: $SmokeModel`n  Copy it there once (models/ is not committed), or pass -SmokeModel <path>."
 }
 
 $remotes = @(& git -C $sub remote 2>$null)
@@ -174,19 +188,33 @@ if (Test-Ancestor $sub $upstream $local) {
 if ($local -eq $oldPin) { Stop-With 0 "Already up to date - $Branch = pin $(Short $oldPin). Nothing to do." }
 
 # ---- step 2: build + ctest ------------------------------------------------------------------
-Write-Log "[2/5] build + ctest ($BuildDir)"
+Write-Log "[2/5] build + ctest + smoke ($BuildDir)"
 if ((Invoke-Logged "cmake" @("-S", $sub, "-B", $BuildDir, "-G", "Visual Studio 17 2022", "-A", "x64", "-DKIMODO_BUILD_TESTS=ON", "-DKIMODO_ENABLE_VULKAN=ON")) -ne 0) {
     Stop-With 4 "CMake configure failed. Nothing was pushed."
 }
 if ((Invoke-Logged "cmake" @("--build", $BuildDir, "--config", "Release")) -ne 0) {
     Stop-With 4 "Build failed. Nothing was pushed. The merge stays local: git -C $SubPath log origin/$Branch..HEAD"
 }
+# Test executables land in Release\, the ggml DLLs in bin\Release\ - without this they die with
+# 0xc0000135 (DLL not found) before running (measured 2026-09-30). This process only.
+$dllDir = Join-Path $BuildDir "bin\Release"
+$env:PATH = "$dllDir;$env:PATH"
+Write-Log "  PATH += $dllDir"
+Write-Log ("  ctest args: " + ($CtestArgs -join " "))
 $listed = (& ctest --test-dir $BuildDir -C Release -N @CtestArgs 2>&1 | Out-String)
 if ($listed -match "Total Tests:\s*0\b" -or $listed -notmatch "Total Tests:") {
     Stop-With 4 "ctest found no tests - a run with zero tests is not a pass. Check KIMODO_BUILD_TESTS."
 }
 if ((Invoke-Logged "ctest" (@("--test-dir", $BuildDir, "-C", "Release", "--output-on-failure") + $CtestArgs)) -ne 0) {
     Stop-With 4 "Tests failed. Nothing was pushed. The merge stays local: git -C $SubPath log origin/$Branch..HEAD"
+}
+$smokeExe = Join-Path $BuildDir "Release\kimodo-generate-smoke.exe"
+if (-not (Test-Path -PathType Leaf $smokeExe)) {
+    Stop-With 4 "Smoke binary missing after build: $smokeExe. Nothing was pushed."
+}
+Write-Log "  smoke: $SmokeModel ($SmokeJoints joints)"
+if ((Invoke-Logged $smokeExe @($SmokeModel, "$SmokeJoints")) -ne 0) {
+    Stop-With 4 "Generate smoke failed on $SmokeModel ($SmokeJoints joints). Nothing was pushed. The merge stays local: git -C $SubPath log origin/$Branch..HEAD"
 }
 
 # ---- step 3: push the fork branch ------------------------------------------------------------
